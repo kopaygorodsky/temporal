@@ -3,53 +3,74 @@ package oracle
 import (
 	"context"
 	"database/sql"
+	"strings"
+
 	p "go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
-	"strings"
 )
 
 const constMetadataPartition = 0
 const constMembershipPartition = 0
+
 const (
 	// ****** CLUSTER_METADATA_INFO TABLE ******
-	insertClusterMetadataQry = `INSERT INTO cluster_metadata_info (metadata_partition, cluster_name, data, data_encoding, version) VALUES(?, ?, ?, ?, ?)`
+	insertClusterMetadataQry = `INSERT INTO cluster_metadata_info 
+		(metadata_partition, cluster_name, data, data_encoding, version) 
+		VALUES (:metadata_partition, :cluster_name, :data, :data_encoding, :version)`
 
-	updateClusterMetadataQry = `UPDATE cluster_metadata_info SET data = ?, data_encoding = ?, version = ? WHERE metadata_partition = ? AND cluster_name = ?`
+	updateClusterMetadataQry = `UPDATE cluster_metadata_info 
+		SET data = :data, data_encoding = :data_encoding, version = :version 
+		WHERE metadata_partition = :metadata_partition AND cluster_name = :cluster_name`
 
 	getClusterMetadataBase         = `SELECT data, data_encoding, version FROM cluster_metadata_info `
-	listClusterMetadataQry         = getClusterMetadataBase + `WHERE metadata_partition = ? ORDER BY cluster_name LIMIT ?`
-	listClusterMetadataRangeQry    = getClusterMetadataBase + `WHERE metadata_partition = ? AND cluster_name > ? ORDER BY cluster_name LIMIT ?`
-	getClusterMetadataQry          = getClusterMetadataBase + `WHERE metadata_partition = ? AND cluster_name = ?`
+	listClusterMetadataQry         = getClusterMetadataBase + `WHERE metadata_partition = :metadata_partition ORDER BY cluster_name`
+	listClusterMetadataRangeQry    = getClusterMetadataBase + `WHERE metadata_partition = :metadata_partition AND cluster_name > :cluster_name ORDER BY cluster_name`
+	getClusterMetadataQry          = getClusterMetadataBase + `WHERE metadata_partition = :metadata_partition AND cluster_name = :cluster_name`
 	writeLockGetClusterMetadataQry = getClusterMetadataQry + ` FOR UPDATE`
 
-	deleteClusterMetadataQry = `DELETE FROM cluster_metadata_info WHERE metadata_partition = ? AND cluster_name = ?`
+	deleteClusterMetadataQry = `DELETE FROM cluster_metadata_info WHERE metadata_partition = :metadata_partition AND cluster_name = :cluster_name`
 
 	// ****** CLUSTER_MEMBERSHIP TABLE ******
-	templateUpsertActiveClusterMembership = `INSERT INTO
-cluster_membership (membership_partition, host_id, rpc_address, rpc_port, role, session_start, last_heartbeat, record_expiry)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?) 
-ON DUPLICATE KEY UPDATE 
-session_start=VALUES(session_start), last_heartbeat=VALUES(last_heartbeat), record_expiry=VALUES(record_expiry)`
+	// Oracle uses MERGE statement instead of MySQL's INSERT ... ON DUPLICATE KEY UPDATE
+	templateUpsertActiveClusterMembership = `MERGE INTO cluster_membership m
+		USING (SELECT :membership_partition as membership_partition, 
+			:host_id as host_id, 
+			:rpc_address as rpc_address, 
+			:rpc_port as rpc_port, 
+			:role as role, 
+			:session_start as session_start, 
+			:last_heartbeat as last_heartbeat, 
+			:record_expiry as record_expiry 
+		FROM dual) s
+		ON (m.membership_partition = s.membership_partition AND m.host_id = s.host_id)
+		WHEN MATCHED THEN
+			UPDATE SET
+				session_start = s.session_start,
+				last_heartbeat = s.last_heartbeat,
+				record_expiry = s.record_expiry
+		WHEN NOT MATCHED THEN
+			INSERT (membership_partition, host_id, rpc_address, rpc_port, role, session_start, last_heartbeat, record_expiry)
+			VALUES (s.membership_partition, s.host_id, s.rpc_address, s.rpc_port, s.role, s.session_start, s.last_heartbeat, s.record_expiry)`
 
 	templatePruneStaleClusterMembership = `DELETE FROM
-cluster_membership 
-WHERE membership_partition = ? AND record_expiry < ?`
+		cluster_membership 
+		WHERE membership_partition = :membership_partition AND record_expiry < :record_expiry`
 
 	templateGetClusterMembership = `SELECT host_id, rpc_address, rpc_port, role, session_start, last_heartbeat, record_expiry FROM
-cluster_membership WHERE membership_partition = ?`
+		cluster_membership WHERE membership_partition = :membership_partition`
 
 	// ClusterMembership WHERE Suffixes
-	templateWithRoleSuffix           = ` AND role = ?`
-	templateWithHeartbeatSinceSuffix = ` AND last_heartbeat > ?`
-	templateWithRecordExpirySuffix   = ` AND record_expiry > ?`
-	templateWithRPCAddressSuffix     = ` AND rpc_address = ?`
-	templateWithHostIDSuffix         = ` AND host_id = ?`
-	templateWithHostIDGreaterSuffix  = ` AND host_id > ?`
-	templateWithSessionStartSuffix   = ` AND session_start >= ?`
+	templateWithRoleSuffix           = ` AND role = :role`
+	templateWithHeartbeatSinceSuffix = ` AND last_heartbeat > :last_heartbeat`
+	templateWithRecordExpirySuffix   = ` AND record_expiry > :record_expiry`
+	templateWithRPCAddressSuffix     = ` AND rpc_address = :rpc_address`
+	templateWithHostIDSuffix         = ` AND host_id = :host_id`
+	templateWithHostIDGreaterSuffix  = ` AND host_id > :host_id_greater`
+	templateWithSessionStartSuffix   = ` AND session_start >= :session_start`
 
-	// Generic SELECT Suffixes
-	templateWithLimitSuffix               = ` LIMIT ?`
+	// Generic SELECT Suffixes - Oracle uses FETCH FIRST n ROWS ONLY instead of LIMIT
 	templateWithOrderBySessionStartSuffix = ` ORDER BY membership_partition ASC, host_id ASC`
+	templateWithLimitSuffix               = ` FETCH FIRST :limit ROWS ONLY`
 )
 
 func (mdb *db) SaveClusterMetadata(
@@ -57,48 +78,60 @@ func (mdb *db) SaveClusterMetadata(
 	row *sqlplugin.ClusterMetadataRow,
 ) (sql.Result, error) {
 	if row.Version == 0 {
-		return mdb.ExecContext(ctx,
+		return mdb.NamedExecContext(ctx,
 			insertClusterMetadataQry,
-			constMetadataPartition,
-			row.ClusterName,
-			row.Data,
-			row.DataEncoding,
-			1,
-		)
+			map[string]interface{}{
+				"metadata_partition": constMetadataPartition,
+				"cluster_name":       row.ClusterName,
+				"data":               row.Data,
+				"data_encoding":      row.DataEncoding,
+				"version":            1,
+			})
 	}
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		updateClusterMetadataQry,
-		row.Data,
-		row.DataEncoding,
-		row.Version+1,
-		constMetadataPartition,
-		row.ClusterName,
-	)
+		map[string]interface{}{
+			"data":               row.Data,
+			"data_encoding":      row.DataEncoding,
+			"version":            row.Version + 1,
+			"metadata_partition": constMetadataPartition,
+			"cluster_name":       row.ClusterName,
+		})
 }
 
 func (mdb *db) ListClusterMetadata(
 	ctx context.Context,
 	filter *sqlplugin.ClusterMetadataFilter,
 ) ([]sqlplugin.ClusterMetadataRow, error) {
-	var err error
 	var rows []sqlplugin.ClusterMetadataRow
-	switch {
-	case len(filter.ClusterName) != 0:
-		err = mdb.SelectContext(ctx,
+	var err error
+
+	// Oracle doesn't support LIMIT directly - we'll use FETCH FIRST n ROWS ONLY
+	var pageSize int
+	if filter.PageSize != nil {
+		pageSize = *filter.PageSize
+	} else {
+		pageSize = 100 // reasonable default
+	}
+
+	if len(filter.ClusterName) != 0 {
+		err = mdb.NamedSelectContext(ctx,
 			&rows,
 			listClusterMetadataRangeQry,
-			constMetadataPartition,
-			filter.ClusterName,
-			filter.PageSize,
-		)
-	default:
-		err = mdb.SelectContext(ctx,
+			map[string]interface{}{
+				"metadata_partition": constMetadataPartition,
+				"cluster_name":       filter.ClusterName,
+			})
+	} else {
+		err = mdb.NamedSelectContext(ctx,
 			&rows,
-			listClusterMetadataQry,
-			constMetadataPartition,
-			filter.PageSize,
-		)
+			listClusterMetadataQry+" FETCH FIRST :page_size ROWS ONLY",
+			map[string]interface{}{
+				"metadata_partition": constMetadataPartition,
+				"page_size":          pageSize,
+			})
 	}
+
 	return rows, err
 }
 
@@ -107,28 +140,29 @@ func (mdb *db) GetClusterMetadata(
 	filter *sqlplugin.ClusterMetadataFilter,
 ) (*sqlplugin.ClusterMetadataRow, error) {
 	var row sqlplugin.ClusterMetadataRow
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&row,
 		getClusterMetadataQry,
-		constMetadataPartition,
-		filter.ClusterName,
-	)
+		map[string]interface{}{
+			"metadata_partition": constMetadataPartition,
+			"cluster_name":       filter.ClusterName,
+		})
 	if err != nil {
 		return nil, err
 	}
-	return &row, err
+	return &row, nil
 }
 
 func (mdb *db) DeleteClusterMetadata(
 	ctx context.Context,
 	filter *sqlplugin.ClusterMetadataFilter,
 ) (sql.Result, error) {
-
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteClusterMetadataQry,
-		constMetadataPartition,
-		filter.ClusterName,
-	)
+		map[string]interface{}{
+			"metadata_partition": constMetadataPartition,
+			"cluster_name":       filter.ClusterName,
+		})
 }
 
 func (mdb *db) WriteLockGetClusterMetadata(
@@ -136,33 +170,35 @@ func (mdb *db) WriteLockGetClusterMetadata(
 	filter *sqlplugin.ClusterMetadataFilter,
 ) (*sqlplugin.ClusterMetadataRow, error) {
 	var row sqlplugin.ClusterMetadataRow
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&row,
 		writeLockGetClusterMetadataQry,
-		constMetadataPartition,
-		filter.ClusterName,
-	)
+		map[string]interface{}{
+			"metadata_partition": constMetadataPartition,
+			"cluster_name":       filter.ClusterName,
+		})
 	if err != nil {
 		return nil, err
 	}
-	return &row, err
+	return &row, nil
 }
 
 func (mdb *db) UpsertClusterMembership(
 	ctx context.Context,
 	row *sqlplugin.ClusterMembershipRow,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		templateUpsertActiveClusterMembership,
-		constMembershipPartition,
-		row.HostID,
-		row.RPCAddress,
-		row.RPCPort,
-		row.Role,
-		//mdb.converter.ToMySQLDateTime(row.SessionStart),
-		//mdb.converter.ToMySQLDateTime(row.LastHeartbeat),
-		//mdb.converter.ToMySQLDateTime(row.RecordExpiry)
-	)
+		map[string]interface{}{
+			"membership_partition": constMembershipPartition,
+			"host_id":              row.HostID,
+			"rpc_address":          row.RPCAddress,
+			"rpc_port":             row.RPCPort,
+			"role":                 row.Role,
+			"session_start":        row.SessionStart,
+			"last_heartbeat":       row.LastHeartbeat,
+			"record_expiry":        row.RecordExpiry,
+		})
 }
 
 func (mdb *db) GetClusterMembers(
@@ -170,67 +206,64 @@ func (mdb *db) GetClusterMembers(
 	filter *sqlplugin.ClusterMembershipFilter,
 ) ([]sqlplugin.ClusterMembershipRow, error) {
 	var queryString strings.Builder
-	var operands []interface{}
+	params := map[string]interface{}{
+		"membership_partition": constMembershipPartition,
+	}
+
 	queryString.WriteString(templateGetClusterMembership)
-	operands = append(operands, constMembershipPartition)
 
 	if filter.HostIDEquals != nil {
 		queryString.WriteString(templateWithHostIDSuffix)
-		operands = append(operands, filter.HostIDEquals)
+		params["host_id"] = filter.HostIDEquals
 	}
 
 	if filter.RPCAddressEquals != "" {
 		queryString.WriteString(templateWithRPCAddressSuffix)
-		operands = append(operands, filter.RPCAddressEquals)
+		params["rpc_address"] = filter.RPCAddressEquals
 	}
 
 	if filter.RoleEquals != p.All {
 		queryString.WriteString(templateWithRoleSuffix)
-		operands = append(operands, filter.RoleEquals)
+		params["role"] = filter.RoleEquals
 	}
 
 	if !filter.LastHeartbeatAfter.IsZero() {
 		queryString.WriteString(templateWithHeartbeatSinceSuffix)
-		operands = append(operands, filter.LastHeartbeatAfter)
+		params["last_heartbeat"] = filter.LastHeartbeatAfter
 	}
 
 	if !filter.RecordExpiryAfter.IsZero() {
 		queryString.WriteString(templateWithRecordExpirySuffix)
-		operands = append(operands, filter.RecordExpiryAfter)
+		params["record_expiry"] = filter.RecordExpiryAfter
 	}
 
 	if !filter.SessionStartedAfter.IsZero() {
 		queryString.WriteString(templateWithSessionStartSuffix)
-		operands = append(operands, filter.SessionStartedAfter)
+		params["session_start"] = filter.SessionStartedAfter
 	}
 
 	if filter.HostIDGreaterThan != nil {
 		queryString.WriteString(templateWithHostIDGreaterSuffix)
-		operands = append(operands, filter.HostIDGreaterThan)
+		params["host_id_greater"] = filter.HostIDGreaterThan
 	}
 
 	queryString.WriteString(templateWithOrderBySessionStartSuffix)
 
 	if filter.MaxRecordCount > 0 {
 		queryString.WriteString(templateWithLimitSuffix)
-		operands = append(operands, filter.MaxRecordCount)
+		params["limit"] = filter.MaxRecordCount
 	}
 
 	compiledQryString := queryString.String()
 
 	var rows []sqlplugin.ClusterMembershipRow
-	if err := mdb.SelectContext(ctx,
+	if err := mdb.NamedSelectContext(ctx,
 		&rows,
 		compiledQryString,
-		operands...,
-	); err != nil {
+		params); err != nil {
 		return nil, err
 	}
-	//for i := range rows {
-	//	rows[i].SessionStart = mdb.converter.FromMySQLDateTime(rows[i].SessionStart)
-	//	rows[i].LastHeartbeat = mdb.converter.FromMySQLDateTime(rows[i].LastHeartbeat)
-	//	rows[i].RecordExpiry = mdb.converter.FromMySQLDateTime(rows[i].RecordExpiry)
-	//}
+
 	return rows, nil
 }
 
@@ -238,9 +271,40 @@ func (mdb *db) PruneClusterMembership(
 	ctx context.Context,
 	filter *sqlplugin.PruneClusterMembershipFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		templatePruneStaleClusterMembership,
-		constMembershipPartition,
-		//mdb.converter.ToMySQLDateTime(filter.PruneRecordsBefore),
-	)
+		map[string]interface{}{
+			"membership_partition": constMembershipPartition,
+			"record_expiry":        filter.PruneRecordsBefore,
+		})
+}
+
+func (mdb *db) NamedSelectContext(
+	ctx context.Context,
+	dest interface{},
+	query string,
+	arg interface{},
+) error {
+	stmt, err := mdb.conn().PrepareNamedContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	return stmt.SelectContext(ctx, dest, arg)
+}
+
+func (mdb *db) NamedGetContext(
+	ctx context.Context,
+	dest interface{},
+	query string,
+	arg interface{},
+) error {
+	stmt, err := mdb.conn().PrepareNamedContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	return stmt.GetContext(ctx, dest, arg)
 }

@@ -6,39 +6,51 @@ import (
 )
 
 const (
-	readSchemaVersionQuery = `SELECT curr_version from schema_version where version_partition=0 and db_name=?`
+	// Using Oracle's syntax for schema version table queries
+	readSchemaVersionQuery = `SELECT curr_version FROM schema_version WHERE version_partition=0 AND db_name=:db_name`
 
-	writeSchemaVersionQuery = `INSERT into schema_version(version_partition, db_name, creation_time, curr_version, min_compatible_version) ` +
-		`VALUES (0,?,?,?,?) ` +
-		`ON DUPLICATE KEY UPDATE ` +
-		`creation_time=VALUES(creation_time), curr_version=VALUES(curr_version), min_compatible_version=VALUES(min_compatible_version)`
+	writeSchemaVersionQuery = `MERGE INTO schema_version
+		USING dual ON (version_partition=0 AND db_name=:db_name)
+		WHEN MATCHED THEN
+			UPDATE SET creation_time=:creation_time, curr_version=:curr_version, min_compatible_version=:min_compatible_version
+		WHEN NOT MATCHED THEN
+			INSERT (version_partition, db_name, creation_time, curr_version, min_compatible_version)
+			VALUES (0, :db_name, :creation_time, :curr_version, :min_compatible_version)`
 
-	writeSchemaUpdateHistoryQuery = `INSERT into schema_update_history(version_partition, year, month, update_time, old_version, new_version, manifest_md5, description) VALUES(0,?,?,?,?,?,?,?)`
+	writeSchemaUpdateHistoryQuery = `INSERT INTO schema_update_history
+		(version_partition, year, month, update_time, old_version, new_version, manifest_md5, description)
+		VALUES(0, :year, :month, :update_time, :old_version, :new_version, :manifest_md5, :description)`
 
-	createSchemaVersionTableQuery = `CREATE TABLE IF NOT EXISTS schema_version(version_partition INT not null, ` +
-		`db_name VARCHAR(255) not null, ` +
-		`creation_time DATETIME(6), ` +
-		`curr_version VARCHAR(64), ` +
-		`min_compatible_version VARCHAR(64), ` +
-		`PRIMARY KEY (version_partition, db_name));`
+	createSchemaVersionTableQuery = `CREATE TABLE schema_version(
+		version_partition NUMBER(10) NOT NULL,
+		db_name VARCHAR2(255) NOT NULL,
+		creation_time TIMESTAMP,
+		curr_version VARCHAR2(64),
+		min_compatible_version VARCHAR2(64),
+		PRIMARY KEY (version_partition, db_name))`
 
-	createSchemaUpdateHistoryTableQuery = `CREATE TABLE IF NOT EXISTS schema_update_history(` +
-		`version_partition INT not null, ` +
-		`year int not null, ` +
-		`month int not null, ` +
-		`update_time DATETIME(6) not null, ` +
-		`description VARCHAR(255), ` +
-		`manifest_md5 VARCHAR(64), ` +
-		`new_version VARCHAR(64), ` +
-		`old_version VARCHAR(64), ` +
-		`PRIMARY KEY (version_partition, year, month, update_time));`
+	createSchemaUpdateHistoryTableQuery = `CREATE TABLE schema_update_history(
+		version_partition NUMBER(10) NOT NULL,
+		year NUMBER(10) NOT NULL,
+		month NUMBER(10) NOT NULL,
+		update_time TIMESTAMP NOT NULL,
+		description VARCHAR2(255),
+		manifest_md5 VARCHAR2(64),
+		new_version VARCHAR2(64),
+		old_version VARCHAR2(64),
+		PRIMARY KEY (version_partition, year, month, update_time))`
 
-	checkDatabaseQuery = "SELECT %v FROM v$instance;"
+	// Oracle-specific query to check database existence
+	checkDatabaseQuery = "SELECT 1 FROM v$database WHERE name = :db_name"
 
-	dropDatabaseQuery = "DROP DATABASE IF EXISTS %v"
+	// Oracle doesn't support direct database creation/dropping via regular SQL
+	// These operations require SYSDBA privileges and are typically done through admin tools
+	dropDatabaseQuery = "-- Dropping a database in Oracle requires SYSDBA privileges and can't be done with a simple query"
 
-	listTablesQuery = "SHOW TABLES FROM %v"
+	// List tables for a specific schema (user) in Oracle
+	listTablesQuery = "SELECT table_name FROM all_tables WHERE owner = :owner"
 
+	// Drop table in Oracle
 	dropTableQuery = "DROP TABLE %v"
 )
 
@@ -57,19 +69,40 @@ func (mdb *db) ReadSchemaVersion(database string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	err = db.Get(&version, readSchemaVersionQuery, database)
+	stmt, err := db.Prepare(readSchemaVersionQuery)
+	if err != nil {
+		return "", mdb.handle.ConvertError(err)
+	}
+	defer stmt.Close()
+
+	err = stmt.QueryRow(database).Scan(&version)
 	return version, mdb.handle.ConvertError(err)
 }
 
 // UpdateSchemaVersion updates the schema version for the keyspace
 func (mdb *db) UpdateSchemaVersion(database string, newVersion string, minCompatibleVersion string) error {
-	return mdb.Exec(writeSchemaVersionQuery, database, time.Now().UTC(), newVersion, minCompatibleVersion)
+	params := map[string]interface{}{
+		"db_name":                database,
+		"creation_time":          time.Now().UTC(),
+		"curr_version":           newVersion,
+		"min_compatible_version": minCompatibleVersion,
+	}
+	return mdb.NamedExec(writeSchemaVersionQuery, params)
 }
 
 // WriteSchemaUpdateLog adds an entry to the schema update history table
 func (mdb *db) WriteSchemaUpdateLog(oldVersion string, newVersion string, manifestMD5 string, desc string) error {
 	now := time.Now().UTC()
-	return mdb.Exec(writeSchemaUpdateHistoryQuery, now.Year(), int(now.Month()), now, oldVersion, newVersion, manifestMD5, desc)
+	params := map[string]interface{}{
+		"year":         now.Year(),
+		"month":        int(now.Month()),
+		"update_time":  now,
+		"old_version":  oldVersion,
+		"new_version":  newVersion,
+		"manifest_md5": manifestMD5,
+		"description":  desc,
+	}
+	return mdb.NamedExec(writeSchemaUpdateHistoryQuery, params)
 }
 
 // Exec executes a sql statement
@@ -82,6 +115,16 @@ func (mdb *db) Exec(stmt string, args ...interface{}) error {
 	return mdb.handle.ConvertError(err)
 }
 
+// NamedExec executes a named sql statement
+func (mdb *db) NamedExec(stmt string, args map[string]interface{}) error {
+	db, err := mdb.handle.DB()
+	if err != nil {
+		return err
+	}
+	_, err = db.NamedExec(stmt, args)
+	return mdb.handle.ConvertError(err)
+}
+
 // ListTables returns a list of tables in this database
 func (mdb *db) ListTables(database string) ([]string, error) {
 	var tables []string
@@ -89,7 +132,9 @@ func (mdb *db) ListTables(database string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = db.Select(&tables, fmt.Sprintf(listTablesQuery, database))
+
+	// In Oracle, we list tables for the current schema (user)
+	err = db.Select(&tables, "SELECT table_name FROM user_tables")
 	return tables, mdb.handle.ConvertError(err)
 }
 
@@ -113,12 +158,17 @@ func (mdb *db) DropAllTables(database string) error {
 }
 
 // CreateDatabase creates a database if it doesn't exist
+// In Oracle, this is typically a DBA operation and requires specific privileges
 func (mdb *db) CreateDatabase(name string) error {
+	// Implement a placeholder as this is typically a DBA operation in Oracle
+	// You might want to log a warning or handle this according to your application needs
 	return nil
-	return mdb.Exec(fmt.Sprintf(createDatabaseQuery, name))
 }
 
 // DropDatabase drops a database
+// In Oracle, this is typically a DBA operation and requires specific privileges
 func (mdb *db) DropDatabase(name string) error {
-	return mdb.Exec(fmt.Sprintf(dropDatabaseQuery, name))
+	// Implement a placeholder as this is typically a DBA operation in Oracle
+	// You might want to log a warning or handle this according to your application needs
+	return nil
 }

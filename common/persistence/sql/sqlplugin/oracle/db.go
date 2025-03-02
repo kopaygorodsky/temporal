@@ -134,22 +134,22 @@ func (mdb *db) ExecContext(ctx context.Context, stmt string, args ...interface{}
 	return res, mdb.handle.ConvertError(err)
 }
 
+func (mdb *db) GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	err := mdb.conn().GetContext(ctx, dest, query, args...)
+	return mdb.handle.ConvertError(err)
+}
+
+func (mdb *db) SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	err := mdb.conn().SelectContext(ctx, dest, query, args...)
+	return mdb.handle.ConvertError(err)
+}
+
 func (mdb *db) NamedExecContext(ctx context.Context, query string, arg interface{}) (sql.Result, error) {
 	res, err := mdb.conn().NamedExecContext(ctx, query, arg)
 	return res, mdb.handle.ConvertError(err)
 }
 
-func (d *db) GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
-	err := d.conn().GetContext(ctx, dest, query, args...)
-	return d.handle.ConvertError(err)
-}
-
-func (d *db) SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
-	err := d.conn().SelectContext(ctx, dest, query, args...)
-	return d.handle.ConvertError(err)
-}
-
-func (d *db) PrepareNamedContext(ctx context.Context, query string) (*sqlx.NamedStmt, error) {
-	stmt, err := d.conn().PrepareNamedContext(ctx, query)
-	return stmt, d.handle.ConvertError(err)
+func (mdb *db) PrepareNamedContext(ctx context.Context, query string) (*sqlx.NamedStmt, error) {
+	stmt, err := mdb.conn().PrepareNamedContext(ctx, query)
+	return stmt, mdb.handle.ConvertError(err)
 }

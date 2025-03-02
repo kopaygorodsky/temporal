@@ -3,49 +3,72 @@ package oracle
 import (
 	"context"
 	"database/sql"
+
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
 
 const (
 	// below are templates for history_node table
-	addHistoryNodesQuery = `INSERT INTO history_node (` +
-		`shard_id, tree_id, branch_id, node_id, prev_txn_id, txn_id, data, data_encoding) ` +
-		`VALUES (:shard_id, :tree_id, :branch_id, :node_id, :prev_txn_id, :txn_id, :data, :data_encoding) ` +
-		`ON DUPLICATE KEY UPDATE prev_txn_id=:prev_txn_id, data=:data, data_encoding=:data_encoding `
+	addHistoryNodesQuery = `MERGE INTO history_node
+		USING DUAL ON (shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id AND node_id = :node_id AND txn_id = :txn_id)
+		WHEN MATCHED THEN 
+			UPDATE SET prev_txn_id = :prev_txn_id, data = :data, data_encoding = :data_encoding
+		WHEN NOT MATCHED THEN
+			INSERT (shard_id, tree_id, branch_id, node_id, prev_txn_id, txn_id, data, data_encoding)
+			VALUES (:shard_id, :tree_id, :branch_id, :node_id, :prev_txn_id, :txn_id, :data, :data_encoding)`
 
-	getHistoryNodesQuery = `SELECT node_id, prev_txn_id, txn_id, data, data_encoding FROM history_node ` +
-		`WHERE shard_id = ? AND tree_id = ? AND branch_id = ? AND ((node_id = ? AND txn_id > ?) OR node_id > ?) AND node_id < ? ` +
-		`ORDER BY shard_id, tree_id, branch_id, node_id, txn_id LIMIT ? `
+	// Oracle version of getHistoryNodesQuery using FETCH FIRST instead of LIMIT
+	getHistoryNodesQuery = `SELECT node_id, prev_txn_id, txn_id, data, data_encoding FROM history_node
+		WHERE shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id AND 
+		((node_id = :min_node_id AND txn_id > :min_txn_id) OR node_id > :min_node_id) AND node_id < :max_node_id
+		ORDER BY shard_id, tree_id, branch_id, node_id, txn_id
+		FETCH FIRST :page_size ROWS ONLY`
 
-	getHistoryNodesReverseQuery = `SELECT node_id, prev_txn_id, txn_id, data, data_encoding FROM history_node ` +
-		`WHERE shard_id = ? AND tree_id = ? AND branch_id = ? AND node_id >= ? AND ((node_id = ? AND txn_id < ?) OR node_id < ?) ` +
-		`ORDER BY shard_id, tree_id, branch_id DESC, node_id DESC, txn_id DESC LIMIT ? `
+	// Oracle version of getHistoryNodesReverseQuery using FETCH FIRST instead of LIMIT
+	getHistoryNodesReverseQuery = `SELECT node_id, prev_txn_id, txn_id, data, data_encoding FROM history_node
+		WHERE shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id AND 
+		node_id >= :min_node_id AND ((node_id = :max_node_id AND txn_id < :max_txn_id) OR node_id < :max_node_id)
+		ORDER BY shard_id, tree_id, branch_id DESC, node_id DESC, txn_id DESC
+		FETCH FIRST :page_size ROWS ONLY`
 
-	getHistoryNodeMetadataQuery = `SELECT node_id, prev_txn_id, txn_id FROM history_node ` +
-		`WHERE shard_id = ? AND tree_id = ? AND branch_id = ? AND ((node_id = ? AND txn_id > ?) OR node_id > ?) AND node_id < ? ` +
-		`ORDER BY shard_id, tree_id, branch_id, node_id, txn_id LIMIT ? `
+	// Oracle version of getHistoryNodeMetadataQuery using FETCH FIRST instead of LIMIT
+	getHistoryNodeMetadataQuery = `SELECT node_id, prev_txn_id, txn_id FROM history_node
+		WHERE shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id AND 
+		((node_id = :min_node_id AND txn_id > :min_txn_id) OR node_id > :min_node_id) AND node_id < :max_node_id
+		ORDER BY shard_id, tree_id, branch_id, node_id, txn_id
+		FETCH FIRST :page_size ROWS ONLY`
 
-	deleteHistoryNodeQuery = `DELETE FROM history_node WHERE shard_id = ? AND tree_id = ? AND branch_id = ? AND node_id = ? AND txn_id = ? `
+	deleteHistoryNodeQuery = `DELETE FROM history_node 
+		WHERE shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id AND node_id = :node_id AND txn_id = :txn_id`
 
-	deleteHistoryNodesQuery = `DELETE FROM history_node WHERE shard_id = ? AND tree_id = ? AND branch_id = ? AND node_id >= ? `
+	deleteHistoryNodesQuery = `DELETE FROM history_node 
+		WHERE shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id AND node_id >= :min_node_id`
 
 	// below are templates for history_tree table
-	addHistoryTreeQuery = `INSERT INTO history_tree (` +
-		`shard_id, tree_id, branch_id, data, data_encoding) ` +
-		`VALUES (:shard_id, :tree_id, :branch_id, :data, :data_encoding) ` +
-		`ON DUPLICATE KEY UPDATE data=VALUES(data), data_encoding=VALUES(data_encoding)`
+	addHistoryTreeQuery = `MERGE INTO history_tree
+		USING DUAL ON (shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id)
+		WHEN MATCHED THEN
+			UPDATE SET data = :data, data_encoding = :data_encoding
+		WHEN NOT MATCHED THEN
+			INSERT (shard_id, tree_id, branch_id, data, data_encoding)
+			VALUES (:shard_id, :tree_id, :branch_id, :data, :data_encoding)`
 
-	getHistoryTreeQuery = `SELECT branch_id, data, data_encoding FROM history_tree WHERE shard_id = ? AND tree_id = ? `
+	getHistoryTreeQuery = `SELECT branch_id, data, data_encoding FROM history_tree 
+		WHERE shard_id = :shard_id AND tree_id = :tree_id`
 
-	// conceptually this query is WHERE (shard_id, tree_id, branch_id) > (?, ?, ?)
-	// but mysql doesn't execute it efficiently unless it's spelled out like this
+	// Oracle version of pagination query using FETCH FIRST
 	paginateBranchesQuery = `SELECT shard_id, tree_id, branch_id, data, data_encoding
-		FROM history_tree
-		WHERE (shard_id = ? AND ((tree_id = ? AND branch_id > ?) OR tree_id > ?)) OR shard_id > ?
-		ORDER BY shard_id, tree_id, branch_id
-		LIMIT ?`
+		FROM (
+			SELECT shard_id, tree_id, branch_id, data, data_encoding 
+			FROM history_tree
+			WHERE (shard_id = :shard_id AND ((tree_id = :tree_id AND branch_id > :branch_id) OR tree_id > :tree_id)) 
+				OR shard_id > :shard_id
+			ORDER BY shard_id, tree_id, branch_id
+		)
+		FETCH FIRST :page_size ROWS ONLY`
 
-	deleteHistoryTreeQuery = `DELETE FROM history_tree WHERE shard_id = ? AND tree_id = ? AND branch_id = ? `
+	deleteHistoryTreeQuery = `DELETE FROM history_tree 
+		WHERE shard_id = :shard_id AND tree_id = :tree_id AND branch_id = :branch_id`
 )
 
 // For history_node table:
@@ -59,8 +82,16 @@ func (mdb *db) InsertIntoHistoryNode(
 	row.TxnID = -row.TxnID
 	return mdb.NamedExecContext(ctx,
 		addHistoryNodesQuery,
-		row,
-	)
+		map[string]interface{}{
+			"shard_id":      row.ShardID,
+			"tree_id":       row.TreeID,
+			"branch_id":     row.BranchID,
+			"node_id":       row.NodeID,
+			"prev_txn_id":   row.PrevTxnID,
+			"txn_id":        row.TxnID,
+			"data":          row.Data,
+			"data_encoding": row.DataEncoding,
+		})
 }
 
 // DeleteFromHistoryNode delete a row from history_node table
@@ -70,17 +101,18 @@ func (mdb *db) DeleteFromHistoryNode(
 ) (sql.Result, error) {
 	// NOTE: txn_id is *= -1 within DB
 	row.TxnID = -row.TxnID
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteHistoryNodeQuery,
-		row.ShardID,
-		row.TreeID,
-		row.BranchID,
-		row.NodeID,
-		row.TxnID,
-	)
+		map[string]interface{}{
+			"shard_id":  row.ShardID,
+			"tree_id":   row.TreeID,
+			"branch_id": row.BranchID,
+			"node_id":   row.NodeID,
+			"txn_id":    row.TxnID,
+		})
 }
 
-// SelectFromHistoryNode reads one or more rows from history_node table
+// RangeSelectFromHistoryNode reads one or more rows from history_node table
 func (mdb *db) RangeSelectFromHistoryNode(
 	ctx context.Context,
 	filter sqlplugin.HistoryNodeSelectFilter,
@@ -94,33 +126,31 @@ func (mdb *db) RangeSelectFromHistoryNode(
 		query = getHistoryNodesQuery
 	}
 
-	var args []interface{}
+	var params map[string]interface{}
 	if filter.ReverseOrder {
-		args = []interface{}{
-			filter.ShardID,
-			filter.TreeID,
-			filter.BranchID,
-			filter.MinNodeID,
-			filter.MaxTxnID,
-			-filter.MaxTxnID,
-			filter.MaxNodeID,
-			filter.PageSize,
+		params = map[string]interface{}{
+			"shard_id":    filter.ShardID,
+			"tree_id":     filter.TreeID,
+			"branch_id":   filter.BranchID,
+			"min_node_id": filter.MinNodeID,
+			"max_node_id": filter.MaxNodeID,
+			"max_txn_id":  -filter.MaxTxnID, // Note the negation
+			"page_size":   filter.PageSize,
 		}
 	} else {
-		args = []interface{}{
-			filter.ShardID,
-			filter.TreeID,
-			filter.BranchID,
-			filter.MinNodeID,
-			-filter.MinTxnID, // NOTE: transaction ID is *= -1 when stored
-			filter.MinNodeID,
-			filter.MaxNodeID,
-			filter.PageSize,
+		params = map[string]interface{}{
+			"shard_id":    filter.ShardID,
+			"tree_id":     filter.TreeID,
+			"branch_id":   filter.BranchID,
+			"min_node_id": filter.MinNodeID,
+			"min_txn_id":  -filter.MinTxnID, // Note the negation
+			"max_node_id": filter.MaxNodeID,
+			"page_size":   filter.PageSize,
 		}
 	}
 
 	var rows []sqlplugin.HistoryNodeRow
-	if err := mdb.SelectContext(ctx, &rows, query, args...); err != nil {
+	if err := mdb.NamedSelectContext(ctx, &rows, query, params); err != nil {
 		return nil, err
 	}
 
@@ -131,21 +161,20 @@ func (mdb *db) RangeSelectFromHistoryNode(
 	return rows, nil
 }
 
-// DeleteFromHistoryNode deletes one or more rows from history_node table
+// RangeDeleteFromHistoryNode deletes one or more rows from history_node table
 func (mdb *db) RangeDeleteFromHistoryNode(
 	ctx context.Context,
 	filter sqlplugin.HistoryNodeDeleteFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteHistoryNodesQuery,
-		filter.ShardID,
-		filter.TreeID,
-		filter.BranchID,
-		filter.MinNodeID,
-	)
+		map[string]interface{}{
+			"shard_id":    filter.ShardID,
+			"tree_id":     filter.TreeID,
+			"branch_id":   filter.BranchID,
+			"min_node_id": filter.MinNodeID,
+		})
 }
-
-// For history_tree table:
 
 // InsertIntoHistoryTree inserts a row into history_tree table
 func (mdb *db) InsertIntoHistoryTree(
@@ -154,8 +183,13 @@ func (mdb *db) InsertIntoHistoryTree(
 ) (sql.Result, error) {
 	return mdb.NamedExecContext(ctx,
 		addHistoryTreeQuery,
-		row,
-	)
+		map[string]interface{}{
+			"shard_id":      row.ShardID,
+			"tree_id":       row.TreeID,
+			"branch_id":     row.BranchID,
+			"data":          row.Data,
+			"data_encoding": row.DataEncoding,
+		})
 }
 
 // SelectFromHistoryTree reads one or more rows from history_tree table
@@ -164,33 +198,31 @@ func (mdb *db) SelectFromHistoryTree(
 	filter sqlplugin.HistoryTreeSelectFilter,
 ) ([]sqlplugin.HistoryTreeRow, error) {
 	var rows []sqlplugin.HistoryTreeRow
-	err := mdb.SelectContext(ctx,
+	err := mdb.NamedSelectContext(ctx,
 		&rows,
 		getHistoryTreeQuery,
-		filter.ShardID,
-		filter.TreeID,
-	)
+		map[string]interface{}{
+			"shard_id": filter.ShardID,
+			"tree_id":  filter.TreeID,
+		})
 	return rows, err
 }
 
-// PaginateBranchesFromHistoryTree reads up to page.Limit rows from the history_tree table sorted by their primary key,
-// while skipping the first page.Offset rows.
+// PaginateBranchesFromHistoryTree reads up to page.Limit rows from the history_tree table
 func (mdb *db) PaginateBranchesFromHistoryTree(
 	ctx context.Context,
 	page sqlplugin.HistoryTreeBranchPage,
 ) ([]sqlplugin.HistoryTreeRow, error) {
 	var rows []sqlplugin.HistoryTreeRow
-	err := mdb.SelectContext(
-		ctx,
+	err := mdb.NamedSelectContext(ctx,
 		&rows,
 		paginateBranchesQuery,
-		page.ShardID,
-		page.TreeID,
-		page.BranchID,
-		page.TreeID,
-		page.ShardID,
-		page.Limit,
-	)
+		map[string]interface{}{
+			"shard_id":  page.ShardID,
+			"tree_id":   page.TreeID,
+			"branch_id": page.BranchID,
+			"page_size": page.Limit,
+		})
 	return rows, err
 }
 
@@ -199,10 +231,11 @@ func (mdb *db) DeleteFromHistoryTree(
 	ctx context.Context,
 	filter sqlplugin.HistoryTreeDeleteFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteHistoryTreeQuery,
-		filter.ShardID,
-		filter.TreeID,
-		filter.BranchID,
-	)
+		map[string]interface{}{
+			"shard_id":  filter.ShardID,
+			"tree_id":   filter.TreeID,
+			"branch_id": filter.BranchID,
+		})
 }
