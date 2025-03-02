@@ -50,6 +50,10 @@ func createConnection(
 		db.SetConnMaxLifetime(cfg.MaxConnLifetime)
 	}
 
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("unable to connect to oracle database: %v", err)
+	}
+
 	return db, nil
 }
 

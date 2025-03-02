@@ -1,6 +1,12 @@
 package tests
 
 import (
+	"fmt"
+	"net"
+	"path/filepath"
+	"strconv"
+	"testing"
+
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
@@ -12,15 +18,11 @@ import (
 	"go.temporal.io/server/common/resolver"
 	"go.temporal.io/server/environment"
 	"go.uber.org/zap/zaptest"
-	"net"
-	"path/filepath"
-	"strconv"
-	"testing"
 )
 
 const (
 	testOracleClusterName        = "temporal_oracle_cluster"
-	testOracleUser               = "system"
+	testOracleUser               = "C##temporal"
 	testOraclePassword           = "temporal"
 	testOracleConnectionProtocol = "tcp"
 	testOracleDatabaseName       = "FREE"
@@ -31,15 +33,17 @@ const (
 	testOracleVisibilitySchema = "../../../schema/oracle/visibility/schema.sql"
 )
 
-type OracleTestData struct {
-	Cfg     *config.SQL
-	Factory *sql.Factory
-	Logger  log.Logger
-	Metrics *metricstest.Capture
-}
+type (
+	OracleTestData struct {
+		Cfg     *config.SQL
+		Factory *sql.Factory
+		Logger  log.Logger
+		Metrics *metricstest.Capture
+	}
+)
 
-func setUpOracleTest(t *testing.T) (MySQLTestData, func()) {
-	var testData MySQLTestData
+func setUpOracleTest(t *testing.T) (OracleTestData, func()) {
+	var testData OracleTestData
 	testData.Cfg = NewOracleSQLConfig()
 	testData.Logger = log.NewZapLogger(zaptest.NewLogger(t))
 	mh := metricstest.NewCaptureHandler()
@@ -58,7 +62,7 @@ func setUpOracleTest(t *testing.T) (MySQLTestData, func()) {
 	tearDown := func() {
 		testData.Factory.Close()
 		mh.StopCapture(testData.Metrics)
-		TearDownMySQLDatabase(t, testData.Cfg)
+		TearDownOracleDatabase(t, testData.Cfg)
 	}
 
 	return testData, tearDown
@@ -111,26 +115,30 @@ func SetupOracleSchema(t *testing.T, cfg *config.SQL) {
 	}
 
 	for _, stmt := range statements {
+		if stmt[len(stmt)-1] == ';' {
+			stmt = stmt[:len(stmt)-1]
+		}
 		if err = db.Exec(stmt); err != nil {
-			t.Fatal(err)
+			defer db.DropAllTables(cfg.DatabaseName)
+			t.Fatal(fmt.Errorf("error executing statement %s: %v", stmt, err))
 		}
 	}
 
-	schemaPath, err = filepath.Abs(testOracleVisibilitySchema)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	statements, err = p.LoadAndSplitQuery([]string{schemaPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, stmt := range statements {
-		if err = db.Exec(stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
+	//@todo visibility will be implemented later
+	//statements, err = p.LoadAndSplitQuery([]string{schemaPath})
+	//if err != nil {
+	//	t.Fatal(err)
+	//}
+	//
+	//for _, stmt := range statements {
+	//	if stmt[len(stmt)-1] == ';' {
+	//		stmt = stmt[:len(stmt)-1]
+	//	}
+	//	if err = db.Exec(stmt); err != nil {
+	//		defer db.DropAllTables(cfg.DatabaseName)
+	//		t.Fatal(err)
+	//	}
+	//}
 }
 
 func TearDownOracleDatabase(t *testing.T, cfg *config.SQL) {
@@ -140,12 +148,12 @@ func TearDownOracleDatabase(t *testing.T, cfg *config.SQL) {
 
 	db, err := sql.NewSQLAdminDB(sqlplugin.DbKindUnknown, &adminCfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
 	if err != nil {
-		t.Fatalf("unable to create MySQL admin DB: %v", err)
+		t.Fatalf("unable to create Oracle admin DB: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	err = db.DropDatabase(cfg.DatabaseName)
+	err = db.DropAllTables(cfg.DatabaseName)
 	if err != nil {
-		t.Fatalf("unable to drop MySQL database: %v", err)
+		t.Fatalf("unable to drop Oracle database: %v", err)
 	}
 }

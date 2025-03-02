@@ -27,6 +27,7 @@ package persistencetests
 import (
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin/mysql"
+	"go.temporal.io/server/common/persistence/sql/sqlplugin/oracle"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin/postgresql"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin/sqlite"
 	"go.temporal.io/server/environment"
@@ -46,6 +47,10 @@ const (
 	testSQLiteMode      = "memory"
 	testSQLiteCache     = "private"
 	testSQLiteSchemaDir = "schema/sqlite/v3" // specify if mode is not "memory"
+
+	testOracleUser      = "C##temporal"
+	testOraclePassword  = "temporal"
+	testOracleSchemaDir = "schema/oracle"
 )
 
 // GetMySQLTestClusterOption return test options
@@ -112,5 +117,18 @@ func GetSQLiteMemoryTestClusterOption() *TestBaseOptions {
 		SchemaDir:         "",
 		StoreType:         config.StoreTypeSQL,
 		ConnectAttributes: map[string]string{"mode": testSQLiteMode, "cache": testSQLiteCache},
+	}
+}
+
+// GetOracleTestClusterOption return test options
+func GetOracleTestClusterOption() *TestBaseOptions {
+	return &TestBaseOptions{
+		SQLDBPluginName: oracle.PluginName,
+		DBUsername:      testOracleUser,
+		DBPassword:      testOraclePassword,
+		DBHost:          environment.GetOracleAddress(),
+		DBPort:          environment.GetOraclePort(),
+		SchemaDir:       testOracleSchemaDir,
+		StoreType:       config.StoreTypeSQL,
 	}
 }

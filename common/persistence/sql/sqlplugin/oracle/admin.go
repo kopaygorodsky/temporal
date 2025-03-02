@@ -43,10 +43,6 @@ const (
 	// Oracle-specific query to check database existence
 	checkDatabaseQuery = "SELECT 1 FROM v$database WHERE name = :db_name"
 
-	// Oracle doesn't support direct database creation/dropping via regular SQL
-	// These operations require SYSDBA privileges and are typically done through admin tools
-	dropDatabaseQuery = "-- Dropping a database in Oracle requires SYSDBA privileges and can't be done with a simple query"
-
 	// List tables for a specific schema (user) in Oracle
 	listTablesQuery = "SELECT table_name FROM all_tables WHERE owner = :owner"
 
@@ -151,6 +147,37 @@ func (mdb *db) DropAllTables(database string) error {
 	}
 	for _, tab := range tables {
 		if err := mdb.DropTable(tab); err != nil {
+			return err
+		}
+	}
+
+	return mdb.DropAllSequences()
+}
+
+func (mdb *db) ListSequences() ([]string, error) {
+	var sequences []string
+	db, err := mdb.handle.DB()
+	if err != nil {
+		return nil, err
+	}
+
+	// Query to list all sequences owned by the current user
+	err = db.Select(&sequences, "SELECT sequence_name FROM user_sequences")
+	return sequences, mdb.handle.ConvertError(err)
+}
+
+func (mdb *db) DropSequence(name string) error {
+	return mdb.Exec(fmt.Sprintf("DROP SEQUENCE %v", name))
+}
+
+// DropAllSequences drops all sequences from this database
+func (mdb *db) DropAllSequences() error {
+	sequences, err := mdb.ListSequences()
+	if err != nil {
+		return err
+	}
+	for _, seq := range sequences {
+		if err := mdb.DropSequence(seq); err != nil {
 			return err
 		}
 	}
