@@ -3,23 +3,24 @@ package oracle
 import (
 	"context"
 	"database/sql"
+
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
 
 const (
 	createShardQry = `INSERT INTO
- shards (shard_id, range_id, data, data_encoding) VALUES (?, ?, ?, ?)`
+ shards (shard_id, range_id, data, data_encoding) VALUES (:shard_id, :range_id, :data, :data_encoding)`
 
 	getShardQry = `SELECT
  shard_id, range_id, data, data_encoding
- FROM shards WHERE shard_id = ?`
+ FROM shards WHERE shard_id = :shard_id`
 
 	updateShardQry = `UPDATE shards 
- SET range_id = ?, data = ?, data_encoding = ? 
- WHERE shard_id = ?`
+ SET range_id = :range_id, data = :data, data_encoding = :data_encoding 
+ WHERE shard_id = :shard_id`
 
-	lockShardQry     = `SELECT range_id FROM shards WHERE shard_id = ? FOR UPDATE`
-	readLockShardQry = `SELECT range_id FROM shards WHERE shard_id = ? LOCK IN SHARE MODE`
+	lockShardQry     = `SELECT range_id FROM shards WHERE shard_id = :shard_id FOR UPDATE`
+	readLockShardQry = `SELECT range_id FROM shards WHERE shard_id = :shard_id FOR UPDATE NOWAIT` // Oracle uses FOR UPDATE NOWAIT instead of LOCK IN SHARE MODE
 )
 
 // InsertIntoShards inserts one or more rows into shards table
@@ -27,12 +28,14 @@ func (mdb *db) InsertIntoShards(
 	ctx context.Context,
 	row *sqlplugin.ShardsRow,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		createShardQry,
-		row.ShardID,
-		row.RangeID,
-		row.Data,
-		row.DataEncoding,
+		map[string]interface{}{
+			"shard_id":      row.ShardID,
+			"range_id":      row.RangeID,
+			"data":          row.Data,
+			"data_encoding": row.DataEncoding,
+		},
 	)
 }
 
@@ -41,12 +44,14 @@ func (mdb *db) UpdateShards(
 	ctx context.Context,
 	row *sqlplugin.ShardsRow,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		updateShardQry,
-		row.RangeID,
-		row.Data,
-		row.DataEncoding,
-		row.ShardID,
+		map[string]interface{}{
+			"range_id":      row.RangeID,
+			"data":          row.Data,
+			"data_encoding": row.DataEncoding,
+			"shard_id":      row.ShardID,
+		},
 	)
 }
 
@@ -56,10 +61,12 @@ func (mdb *db) SelectFromShards(
 	filter sqlplugin.ShardsFilter,
 ) (*sqlplugin.ShardsRow, error) {
 	var row sqlplugin.ShardsRow
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&row,
 		getShardQry,
-		filter.ShardID,
+		map[string]interface{}{
+			"shard_id": filter.ShardID,
+		},
 	)
 	if err != nil {
 		return nil, err
@@ -73,10 +80,12 @@ func (mdb *db) ReadLockShards(
 	filter sqlplugin.ShardsFilter,
 ) (int64, error) {
 	var rangeID int64
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&rangeID,
 		readLockShardQry,
-		filter.ShardID,
+		map[string]interface{}{
+			"shard_id": filter.ShardID,
+		},
 	)
 	return rangeID, err
 }
@@ -87,10 +96,12 @@ func (mdb *db) WriteLockShards(
 	filter sqlplugin.ShardsFilter,
 ) (int64, error) {
 	var rangeID int64
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&rangeID,
 		lockShardQry,
-		filter.ShardID,
+		map[string]interface{}{
+			"shard_id": filter.ShardID,
+		},
 	)
 	return rangeID, err
 }

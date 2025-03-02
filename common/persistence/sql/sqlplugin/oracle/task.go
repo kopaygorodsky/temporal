@@ -3,87 +3,113 @@ package oracle
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
+
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
-	"strings"
 )
 
 const (
-	taskQueueCreatePart = `INTO task_queues(range_hash, task_queue_id, range_id, data, data_encoding) ` +
-		`VALUES (:range_hash, :task_queue_id, :range_id, :data, :data_encoding)`
+	// Task Queues
+	taskQueueCreatePart = `INTO task_queues(range_hash, task_queue_id, range_id, data, data_encoding) 
+		VALUES (:range_hash, :task_queue_id, :range_id, :data, :data_encoding)`
 
-	// (default range ID: initialRangeID == 1)
+	// Oracle's INSERT statement
 	createTaskQueueQry = `INSERT ` + taskQueueCreatePart
 
+	// Oracle's UPDATE statement
 	updateTaskQueueQry = `UPDATE task_queues SET
 range_id = :range_id,
 data = :data,
 data_encoding = :data_encoding
 WHERE
 range_hash = :range_hash AND
-task_queue_id = :task_queue_id
-`
+task_queue_id = :task_queue_id`
 
+	// Queries for task_queues table
 	listTaskQueueRowSelect = `SELECT range_hash, task_queue_id, range_id, data, data_encoding from task_queues `
 
+	// Oracle uses FETCH FIRST instead of LIMIT
 	listTaskQueueWithHashRangeQry = listTaskQueueRowSelect +
-		`WHERE range_hash >= ? AND range_hash <= ? AND task_queue_id > ? ORDER BY task_queue_id ASC LIMIT ?`
+		`WHERE range_hash >= :range_hash_min AND range_hash <= :range_hash_max AND task_queue_id > :task_queue_id_min 
+		ORDER BY task_queue_id ASC FETCH FIRST :page_size ROWS ONLY`
 
 	listTaskQueueQry = listTaskQueueRowSelect +
-		`WHERE range_hash = ? AND task_queue_id > ? ORDER BY task_queue_id ASC LIMIT ?`
+		`WHERE range_hash = :range_hash AND task_queue_id > :task_queue_id_min 
+		ORDER BY task_queue_id ASC FETCH FIRST :page_size ROWS ONLY`
 
 	getTaskQueueQry = listTaskQueueRowSelect +
-		`WHERE range_hash = ? AND task_queue_id = ?`
+		`WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id`
 
-	deleteTaskQueueQry = `DELETE FROM task_queues WHERE range_hash=? AND task_queue_id=? AND range_id=?`
+	deleteTaskQueueQry = `DELETE FROM task_queues WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id AND range_id = :range_id`
 
-	lockTaskQueueQry = `SELECT range_id FROM task_queues ` +
-		`WHERE range_hash = ? AND task_queue_id = ? FOR UPDATE`
-	// *** Task_Queues Table Above ***
+	lockTaskQueueQry = `SELECT range_id FROM task_queues 
+		WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id FOR UPDATE`
 
-	// *** Tasks Below ***
-	getTaskMinMaxQry = `SELECT task_id, data, data_encoding ` +
-		`FROM tasks ` +
-		`WHERE range_hash = ? AND task_queue_id = ? AND task_id >= ? AND task_id < ? ` +
-		` ORDER BY task_id LIMIT ?`
+	// Tasks queries
+	getTaskMinMaxQry = `SELECT task_id, data, data_encoding 
+		FROM tasks 
+		WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id AND task_id >= :min_task_id AND task_id < :max_task_id 
+		ORDER BY task_id FETCH FIRST :page_size ROWS ONLY`
 
-	getTaskMinQry = `SELECT task_id, data, data_encoding ` +
-		`FROM tasks ` +
-		`WHERE range_hash = ? AND task_queue_id = ? AND task_id >= ? ORDER BY task_id LIMIT ?`
+	getTaskMinQry = `SELECT task_id, data, data_encoding 
+		FROM tasks 
+		WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id AND task_id >= :min_task_id 
+		ORDER BY task_id FETCH FIRST :page_size ROWS ONLY`
 
-	createTaskQry = `INSERT INTO ` +
-		`tasks(range_hash, task_queue_id, task_id, data, data_encoding) ` +
-		`VALUES(:range_hash, :task_queue_id, :task_id, :data, :data_encoding)`
+	createTaskQry = `INSERT INTO 
+		tasks(range_hash, task_queue_id, task_id, data, data_encoding) 
+		VALUES(:range_hash, :task_queue_id, :task_id, :data, :data_encoding)`
 
-	deleteTaskQry = `DELETE FROM tasks ` +
-		`WHERE range_hash = ? AND task_queue_id = ? AND task_id = ?`
+	deleteTaskQry = `DELETE FROM tasks 
+		WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id AND task_id = :task_id`
 
-	rangeDeleteTaskQry = `DELETE FROM tasks ` +
-		`WHERE range_hash = ? AND task_queue_id = ? AND task_id < ? ` +
-		`ORDER BY task_queue_id,task_id LIMIT ?`
+	// Oracle uses ROWNUM <= instead of LIMIT for DELETE with ORDER BY
+	rangeDeleteTaskQry = `DELETE FROM tasks 
+		WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id AND task_id < :task_id AND 
+		ROWID IN (
+			SELECT ROWID FROM (
+				SELECT ROWID FROM tasks 
+				WHERE range_hash = :range_hash AND task_queue_id = :task_queue_id AND task_id < :task_id 
+				ORDER BY task_queue_id, task_id
+			) WHERE ROWNUM <= :row_limit
+		)`
 
-	getTaskQueueUserDataQry = `SELECT data, data_encoding, version FROM task_queue_user_data ` +
-		`WHERE namespace_id = ? AND task_queue_name = ?`
+	// Task queue user data queries
+	getTaskQueueUserDataQry = `SELECT data, data_encoding, version FROM task_queue_user_data 
+		WHERE namespace_id = :namespace_id AND task_queue_name = :task_queue_name`
 
-	updateTaskQueueUserDataQry = `UPDATE task_queue_user_data SET ` +
-		`data = ?, ` +
-		`data_encoding = ?, ` +
-		`version = ? ` +
-		`WHERE namespace_id = ? ` +
-		`AND task_queue_name = ? ` +
-		`AND version = ?`
+	updateTaskQueueUserDataQry = `UPDATE task_queue_user_data SET 
+		data = :data, 
+		data_encoding = :data_encoding, 
+		version = :new_version 
+		WHERE namespace_id = :namespace_id 
+		AND task_queue_name = :task_queue_name 
+		AND version = :version`
 
-	insertTaskQueueUserDataQry = `INSERT INTO task_queue_user_data` +
-		`(namespace_id, task_queue_name, data, data_encoding, version) ` +
-		`VALUES (?, ?, ?, ?, 1)`
+	insertTaskQueueUserDataQry = `INSERT INTO task_queue_user_data
+		(namespace_id, task_queue_name, data, data_encoding, version) 
+		VALUES (:namespace_id, :task_queue_name, :data, :data_encoding, 1)`
 
-	listTaskQueueUserDataQry = `SELECT task_queue_name, data, data_encoding, version FROM task_queue_user_data WHERE namespace_id = ? AND task_queue_name > ? LIMIT ?`
+	listTaskQueueUserDataQry = `SELECT task_queue_name, data, data_encoding, version 
+		FROM task_queue_user_data 
+		WHERE namespace_id = :namespace_id AND task_queue_name > :task_queue_name_min 
+		FETCH FIRST :page_size ROWS ONLY`
 
-	addBuildIdToTaskQueueMappingQry    = `INSERT INTO build_id_to_task_queue (namespace_id, build_id, task_queue_name) VALUES `
-	removeBuildIdToTaskQueueMappingQry = `DELETE FROM build_id_to_task_queue WHERE namespace_id = ? AND task_queue_name = ? AND build_id IN (`
-	listTaskQueuesByBuildIdQry         = `SELECT task_queue_name FROM build_id_to_task_queue WHERE namespace_id = ? AND build_id = ?`
-	countTaskQueuesByBuildIdQry        = `SELECT COUNT(*) FROM build_id_to_task_queue WHERE namespace_id = ? AND build_id = ?`
+	// Oracle uses VALUES in INSERT statements differently for multiple rows
+	addBuildIdToTaskQueueMappingQryBase = `INSERT INTO build_id_to_task_queue (namespace_id, build_id, task_queue_name) 
+		VALUES (:namespace_id, :build_id, :task_queue_name)`
+
+	removeBuildIdToTaskQueueMappingQryBase = `DELETE FROM build_id_to_task_queue 
+		WHERE namespace_id = :namespace_id AND task_queue_name = :task_queue_name AND build_id IN (`
+
+	listTaskQueuesByBuildIdQry = `SELECT task_queue_name FROM build_id_to_task_queue 
+		WHERE namespace_id = :namespace_id AND build_id = :build_id`
+
+	countTaskQueuesByBuildIdQry = `SELECT COUNT(*) FROM build_id_to_task_queue 
+		WHERE namespace_id = :namespace_id AND build_id = :build_id`
 )
 
 // InsertIntoTasks inserts one or more rows into tasks table
@@ -104,23 +130,25 @@ func (mdb *db) SelectFromTasks(
 ) ([]sqlplugin.TasksRow, error) {
 	var err error
 	var rows []sqlplugin.TasksRow
-	switch {
-	case filter.ExclusiveMaxTaskID != nil:
-		err = mdb.SelectContext(ctx,
-			&rows, getTaskMinMaxQry,
-			filter.RangeHash,
-			filter.TaskQueueID,
-			*filter.InclusiveMinTaskID,
-			*filter.ExclusiveMaxTaskID,
-			*filter.PageSize,
+	params := map[string]interface{}{
+		"range_hash":    filter.RangeHash,
+		"task_queue_id": filter.TaskQueueID,
+		"min_task_id":   *filter.InclusiveMinTaskID,
+		"page_size":     *filter.PageSize,
+	}
+
+	if filter.ExclusiveMaxTaskID != nil {
+		params["max_task_id"] = *filter.ExclusiveMaxTaskID
+		err = mdb.NamedSelectContext(ctx,
+			&rows,
+			getTaskMinMaxQry,
+			params,
 		)
-	default:
-		err = mdb.SelectContext(ctx,
-			&rows, getTaskMinQry,
-			filter.RangeHash,
-			filter.TaskQueueID,
-			*filter.InclusiveMinTaskID,
-			*filter.PageSize,
+	} else {
+		err = mdb.NamedSelectContext(ctx,
+			&rows,
+			getTaskMinQry,
+			params,
 		)
 	}
 	if err != nil {
@@ -140,12 +168,15 @@ func (mdb *db) DeleteFromTasks(
 	if filter.Limit == nil || *filter.Limit == 0 {
 		return nil, serviceerror.NewInternal("missing limit parameter")
 	}
-	return mdb.ExecContext(ctx,
+
+	return mdb.NamedExecContext(ctx,
 		rangeDeleteTaskQry,
-		filter.RangeHash,
-		filter.TaskQueueID,
-		*filter.ExclusiveMaxTaskID,
-		*filter.Limit,
+		map[string]interface{}{
+			"range_hash":    filter.RangeHash,
+			"task_queue_id": filter.TaskQueueID,
+			"task_id":       *filter.ExclusiveMaxTaskID,
+			"row_limit":     *filter.Limit,
+		},
 	)
 }
 
@@ -200,11 +231,13 @@ func (mdb *db) selectFromTaskQueues(
 ) ([]sqlplugin.TaskQueuesRow, error) {
 	var err error
 	var row sqlplugin.TaskQueuesRow
-	err = mdb.GetContext(ctx,
+	err = mdb.NamedGetContext(ctx,
 		&row,
 		getTaskQueueQry,
-		filter.RangeHash,
-		filter.TaskQueueID,
+		map[string]interface{}{
+			"range_hash":    filter.RangeHash,
+			"task_queue_id": filter.TaskQueueID,
+		},
 	)
 	if err != nil {
 		return nil, err
@@ -220,21 +253,25 @@ func (mdb *db) rangeSelectFromTaskQueues(
 	var rows []sqlplugin.TaskQueuesRow
 
 	if filter.RangeHashLessThanEqualTo != 0 {
-		err = mdb.SelectContext(ctx,
+		err = mdb.NamedSelectContext(ctx,
 			&rows,
 			listTaskQueueWithHashRangeQry,
-			filter.RangeHashGreaterThanEqualTo,
-			filter.RangeHashLessThanEqualTo,
-			filter.TaskQueueIDGreaterThan,
-			*filter.PageSize,
+			map[string]interface{}{
+				"range_hash_min":    filter.RangeHashGreaterThanEqualTo,
+				"range_hash_max":    filter.RangeHashLessThanEqualTo,
+				"task_queue_id_min": filter.TaskQueueIDGreaterThan,
+				"page_size":         *filter.PageSize,
+			},
 		)
 	} else {
-		err = mdb.SelectContext(ctx,
+		err = mdb.NamedSelectContext(ctx,
 			&rows,
 			listTaskQueueQry,
-			filter.RangeHash,
-			filter.TaskQueueIDGreaterThan,
-			*filter.PageSize,
+			map[string]interface{}{
+				"range_hash":        filter.RangeHash,
+				"task_queue_id_min": filter.TaskQueueIDGreaterThan,
+				"page_size":         *filter.PageSize,
+			},
 		)
 	}
 	if err != nil {
@@ -248,11 +285,13 @@ func (mdb *db) DeleteFromTaskQueues(
 	ctx context.Context,
 	filter sqlplugin.TaskQueuesFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteTaskQueueQry,
-		filter.RangeHash,
-		filter.TaskQueueID,
-		*filter.RangeID,
+		map[string]interface{}{
+			"range_hash":    filter.RangeHash,
+			"task_queue_id": filter.TaskQueueID,
+			"range_id":      *filter.RangeID,
+		},
 	)
 }
 
@@ -262,96 +301,170 @@ func (mdb *db) LockTaskQueues(
 	filter sqlplugin.TaskQueuesFilter,
 ) (int64, error) {
 	var rangeID int64
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&rangeID,
 		lockTaskQueueQry,
-		filter.RangeHash,
-		filter.TaskQueueID,
+		map[string]interface{}{
+			"range_hash":    filter.RangeHash,
+			"task_queue_id": filter.TaskQueueID,
+		},
 	)
 	return rangeID, err
 }
 
-func (mdb *db) GetTaskQueueUserData(ctx context.Context, request *sqlplugin.GetTaskQueueUserDataRequest) (*sqlplugin.VersionedBlob, error) {
+func (mdb *db) GetTaskQueueUserData(
+	ctx context.Context,
+	request *sqlplugin.GetTaskQueueUserDataRequest,
+) (*sqlplugin.VersionedBlob, error) {
 	var row sqlplugin.VersionedBlob
-	err := mdb.GetContext(ctx, &row, getTaskQueueUserDataQry, request.NamespaceID, request.TaskQueueName)
+	err := mdb.NamedGetContext(ctx,
+		&row,
+		getTaskQueueUserDataQry,
+		map[string]interface{}{
+			"namespace_id":    request.NamespaceID,
+			"task_queue_name": request.TaskQueueName,
+		},
+	)
 	return &row, err
 }
 
-func (mdb *db) UpdateTaskQueueUserData(ctx context.Context, request *sqlplugin.UpdateTaskQueueDataRequest) error {
+func (mdb *db) UpdateTaskQueueUserData(
+	ctx context.Context,
+	request *sqlplugin.UpdateTaskQueueDataRequest,
+) error {
 	if request.Version == 0 {
-		_, err := mdb.ExecContext(
+		_, err := mdb.NamedExecContext(
 			ctx,
 			insertTaskQueueUserDataQry,
-			request.NamespaceID,
-			request.TaskQueueName,
-			request.Data,
-			request.DataEncoding)
+			map[string]interface{}{
+				"namespace_id":    request.NamespaceID,
+				"task_queue_name": request.TaskQueueName,
+				"data":            request.Data,
+				"data_encoding":   request.DataEncoding,
+			},
+		)
 		return err
 	}
-	result, err := mdb.ExecContext(
+
+	result, err := mdb.NamedExecContext(
 		ctx,
 		updateTaskQueueUserDataQry,
-		request.Data,
-		request.DataEncoding,
-		request.Version+1,
-		request.NamespaceID,
-		request.TaskQueueName,
-		request.Version)
+		map[string]interface{}{
+			"data":            request.Data,
+			"data_encoding":   request.DataEncoding,
+			"new_version":     request.Version + 1,
+			"namespace_id":    request.NamespaceID,
+			"task_queue_name": request.TaskQueueName,
+			"version":         request.Version,
+		},
+	)
 	if err != nil {
 		return err
 	}
+
 	numRows, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if numRows != 1 {
 		return &persistence.ConditionFailedError{Msg: "Expected exactly one row to be updated"}
 	}
 	return nil
 }
 
-func (mdb *db) AddToBuildIdToTaskQueueMapping(ctx context.Context, request sqlplugin.AddToBuildIdToTaskQueueMapping) error {
-	query := addBuildIdToTaskQueueMappingQry
-	var params []any
-	for idx, buildId := range request.BuildIds {
-		if idx == len(request.BuildIds)-1 {
-			query += "(?, ?, ?)"
-		} else {
-			query += "(?, ?, ?), "
+func (mdb *db) AddToBuildIdToTaskQueueMapping(
+	ctx context.Context,
+	request sqlplugin.AddToBuildIdToTaskQueueMapping,
+) error {
+	if len(request.BuildIds) == 0 {
+		return nil
+	}
+
+	// Oracle doesn't have a direct way to insert multiple rows like MySQL
+	// We need to use a different approach - use UNION ALL or execute multiple queries
+
+	// For simplicity here, we'll execute multiple insert statements
+	for _, buildId := range request.BuildIds {
+		_, err := mdb.NamedExecContext(
+			ctx,
+			addBuildIdToTaskQueueMappingQryBase,
+			map[string]interface{}{
+				"namespace_id":    request.NamespaceID,
+				"build_id":        buildId,
+				"task_queue_name": request.TaskQueueName,
+			},
+		)
+		if err != nil {
+			return err
 		}
-		params = append(params, request.NamespaceID, buildId, request.TaskQueueName)
 	}
-
-	_, err := mdb.ExecContext(ctx, query, params...)
-	return err
+	return nil
 }
 
-func (mdb *db) RemoveFromBuildIdToTaskQueueMapping(ctx context.Context, request sqlplugin.RemoveFromBuildIdToTaskQueueMapping) error {
-	query := removeBuildIdToTaskQueueMappingQry + strings.Repeat("?, ", len(request.BuildIds)-1) + "?)"
-	// Golang doesn't support appending a string slice to an any slice which is essentially what we're doing here.
-	params := make([]any, len(request.BuildIds)+2)
-	params[0] = request.NamespaceID
-	params[1] = request.TaskQueueName
+func (mdb *db) RemoveFromBuildIdToTaskQueueMapping(
+	ctx context.Context,
+	request sqlplugin.RemoveFromBuildIdToTaskQueueMapping,
+) error {
+	if len(request.BuildIds) == 0 {
+		return nil
+	}
+
+	// Generate the IN clause placeholders and parameters
+	inParams := make([]string, len(request.BuildIds))
+	params := map[string]interface{}{
+		"namespace_id":    request.NamespaceID,
+		"task_queue_name": request.TaskQueueName,
+	}
+
 	for i, buildId := range request.BuildIds {
-		params[i+2] = buildId
+		paramName := fmt.Sprintf("build_id_%d", i)
+		inParams[i] = ":" + paramName
+		params[paramName] = buildId
 	}
 
-	_, err := mdb.ExecContext(ctx, query, params...)
+	query := removeBuildIdToTaskQueueMappingQryBase + strings.Join(inParams, ", ") + ")"
+
+	_, err := mdb.NamedExecContext(ctx, query, params)
 	return err
 }
 
-func (mdb *db) ListTaskQueueUserDataEntries(ctx context.Context, request *sqlplugin.ListTaskQueueUserDataEntriesRequest) ([]sqlplugin.TaskQueueUserDataEntry, error) {
+func (mdb *db) ListTaskQueueUserDataEntries(
+	ctx context.Context,
+	request *sqlplugin.ListTaskQueueUserDataEntriesRequest,
+) ([]sqlplugin.TaskQueueUserDataEntry, error) {
 	var rows []sqlplugin.TaskQueueUserDataEntry
-	err := mdb.SelectContext(ctx, &rows, listTaskQueueUserDataQry, request.NamespaceID, request.LastTaskQueueName, request.Limit)
+	err := mdb.NamedSelectContext(
+		ctx,
+		&rows,
+		listTaskQueueUserDataQry,
+		map[string]interface{}{
+			"namespace_id":        request.NamespaceID,
+			"task_queue_name_min": request.LastTaskQueueName,
+			"page_size":           request.Limit,
+		},
+	)
 	return rows, err
 }
 
-func (mdb *db) GetTaskQueuesByBuildId(ctx context.Context, request *sqlplugin.GetTaskQueuesByBuildIdRequest) ([]string, error) {
+func (mdb *db) GetTaskQueuesByBuildId(
+	ctx context.Context,
+	request *sqlplugin.GetTaskQueuesByBuildIdRequest,
+) ([]string, error) {
 	var rows []struct {
 		TaskQueueName string
 	}
 
-	err := mdb.SelectContext(ctx, &rows, listTaskQueuesByBuildIdQry, request.NamespaceID, request.BuildID)
+	err := mdb.NamedSelectContext(
+		ctx,
+		&rows,
+		listTaskQueuesByBuildIdQry,
+		map[string]interface{}{
+			"namespace_id": request.NamespaceID,
+			"build_id":     request.BuildID,
+		},
+	)
+
 	taskQueues := make([]string, len(rows))
 	for i, row := range rows {
 		taskQueues[i] = row.TaskQueueName
@@ -359,8 +472,19 @@ func (mdb *db) GetTaskQueuesByBuildId(ctx context.Context, request *sqlplugin.Ge
 	return taskQueues, err
 }
 
-func (mdb *db) CountTaskQueuesByBuildId(ctx context.Context, request *sqlplugin.CountTaskQueuesByBuildIdRequest) (int, error) {
+func (mdb *db) CountTaskQueuesByBuildId(
+	ctx context.Context,
+	request *sqlplugin.CountTaskQueuesByBuildIdRequest,
+) (int, error) {
 	var count int
-	err := mdb.GetContext(ctx, &count, countTaskQueuesByBuildIdQry, request.NamespaceID, request.BuildID)
+	err := mdb.NamedGetContext(
+		ctx,
+		&count,
+		countTaskQueuesByBuildIdQry,
+		map[string]interface{}{
+			"namespace_id": request.NamespaceID,
+			"build_id":     request.BuildID,
+		},
+	)
 	return count, err
 }

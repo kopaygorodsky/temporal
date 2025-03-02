@@ -295,7 +295,7 @@ func (mdb *db) InsertIntoCurrentExecutions(
 ) (sql.Result, error) {
 	// Convert the start time to Oracle timestamp
 	if row.StartTime != nil {
-		ts := mdb.converter.ToMySQLDateTime(*row.StartTime)
+		ts := mdb.converter.ToOracleTimestamp(*row.StartTime)
 		row.StartTime = &ts
 	}
 
@@ -312,7 +312,7 @@ func (mdb *db) UpdateCurrentExecutions(
 ) (sql.Result, error) {
 	// Convert the start time to Oracle timestamp
 	if row.StartTime != nil {
-		ts := mdb.converter.ToMySQLDateTime(*row.StartTime)
+		ts := mdb.converter.ToOracleTimestamp(*row.StartTime)
 		row.StartTime = &ts
 	}
 
@@ -343,7 +343,7 @@ func (mdb *db) SelectFromCurrentExecutions(
 
 	// Convert timestamp back to original format
 	if row.StartTime != nil {
-		ts := mdb.converter.FromMySQLDateTime(*row.StartTime)
+		ts := mdb.converter.FromOracleTimestamp(*row.StartTime)
 		row.StartTime = &ts
 	}
 
@@ -387,7 +387,7 @@ func (mdb *db) LockCurrentExecutions(
 
 	// Convert timestamp back to original format
 	if row.StartTime != nil {
-		ts := mdb.converter.FromMySQLDateTime(*row.StartTime)
+		ts := mdb.converter.FromOracleTimestamp(*row.StartTime)
 		row.StartTime = &ts
 	}
 
@@ -417,7 +417,7 @@ func (mdb *db) LockCurrentExecutionsJoinExecutions(
 	// Convert timestamps back to original format
 	for i := range rows {
 		if rows[i].StartTime != nil {
-			ts := mdb.converter.FromMySQLDateTime(*rows[i].StartTime)
+			ts := mdb.converter.FromOracleTimestamp(*rows[i].StartTime)
 			rows[i].StartTime = &ts
 		}
 	}
@@ -495,7 +495,7 @@ func (mdb *db) InsertIntoHistoryScheduledTasks(
 	rows []sqlplugin.HistoryScheduledTasksRow,
 ) (sql.Result, error) {
 	for i := range rows {
-		rows[i].VisibilityTimestamp = mdb.converter.ToMySQLDateTime(rows[i].VisibilityTimestamp)
+		rows[i].VisibilityTimestamp = mdb.converter.ToOracleTimestamp(rows[i].VisibilityTimestamp)
 	}
 	return mdb.NamedExecContext(ctx,
 		createHistoryScheduledTasksQuery,
@@ -509,8 +509,8 @@ func (mdb *db) RangeSelectFromHistoryScheduledTasks(
 	filter sqlplugin.HistoryScheduledTasksRangeFilter,
 ) ([]sqlplugin.HistoryScheduledTasksRow, error) {
 	var rows []sqlplugin.HistoryScheduledTasksRow
-	minVisibilityTS := mdb.converter.ToMySQLDateTime(filter.InclusiveMinVisibilityTimestamp)
-	maxVisibilityTS := mdb.converter.ToMySQLDateTime(filter.ExclusiveMaxVisibilityTimestamp)
+	minVisibilityTS := mdb.converter.ToOracleTimestamp(filter.InclusiveMinVisibilityTimestamp)
+	maxVisibilityTS := mdb.converter.ToOracleTimestamp(filter.ExclusiveMaxVisibilityTimestamp)
 
 	if err := mdb.NamedSelectContext(ctx,
 		&rows,
@@ -528,7 +528,7 @@ func (mdb *db) RangeSelectFromHistoryScheduledTasks(
 	}
 
 	for i := range rows {
-		rows[i].VisibilityTimestamp = mdb.converter.FromMySQLDateTime(rows[i].VisibilityTimestamp)
+		rows[i].VisibilityTimestamp = mdb.converter.FromOracleTimestamp(rows[i].VisibilityTimestamp)
 	}
 	return rows, nil
 }
@@ -538,7 +538,7 @@ func (mdb *db) DeleteFromHistoryScheduledTasks(
 	ctx context.Context,
 	filter sqlplugin.HistoryScheduledTasksFilter,
 ) (sql.Result, error) {
-	visibilityTS := mdb.converter.ToMySQLDateTime(filter.VisibilityTimestamp)
+	visibilityTS := mdb.converter.ToOracleTimestamp(filter.VisibilityTimestamp)
 	return mdb.NamedExecContext(ctx,
 		deleteHistoryScheduledTaskQuery,
 		map[string]interface{}{
@@ -555,8 +555,8 @@ func (mdb *db) RangeDeleteFromHistoryScheduledTasks(
 	ctx context.Context,
 	filter sqlplugin.HistoryScheduledTasksRangeFilter,
 ) (sql.Result, error) {
-	minVisibilityTS := mdb.converter.ToMySQLDateTime(filter.InclusiveMinVisibilityTimestamp)
-	maxVisibilityTS := mdb.converter.ToMySQLDateTime(filter.ExclusiveMaxVisibilityTimestamp)
+	minVisibilityTS := mdb.converter.ToOracleTimestamp(filter.InclusiveMinVisibilityTimestamp)
+	maxVisibilityTS := mdb.converter.ToOracleTimestamp(filter.ExclusiveMaxVisibilityTimestamp)
 
 	return mdb.NamedExecContext(ctx,
 		rangeDeleteHistoryScheduledTasksQuery,
@@ -636,7 +636,7 @@ func (mdb *db) InsertIntoTimerTasks(
 	rows []sqlplugin.TimerTasksRow,
 ) (sql.Result, error) {
 	for i := range rows {
-		rows[i].VisibilityTimestamp = mdb.converter.ToMySQLDateTime(rows[i].VisibilityTimestamp)
+		rows[i].VisibilityTimestamp = mdb.converter.ToOracleTimestamp(rows[i].VisibilityTimestamp)
 	}
 	return mdb.NamedExecContext(ctx,
 		createTimerTasksQuery,
@@ -650,8 +650,8 @@ func (mdb *db) RangeSelectFromTimerTasks(
 	filter sqlplugin.TimerTasksRangeFilter,
 ) ([]sqlplugin.TimerTasksRow, error) {
 	var rows []sqlplugin.TimerTasksRow
-	minVisibilityTS := mdb.converter.ToMySQLDateTime(filter.InclusiveMinVisibilityTimestamp)
-	maxVisibilityTS := mdb.converter.ToMySQLDateTime(filter.ExclusiveMaxVisibilityTimestamp)
+	minVisibilityTS := mdb.converter.ToOracleTimestamp(filter.InclusiveMinVisibilityTimestamp)
+	maxVisibilityTS := mdb.converter.ToOracleTimestamp(filter.ExclusiveMaxVisibilityTimestamp)
 
 	if err := mdb.NamedSelectContext(ctx,
 		&rows,
@@ -668,7 +668,7 @@ func (mdb *db) RangeSelectFromTimerTasks(
 	}
 
 	for i := range rows {
-		rows[i].VisibilityTimestamp = mdb.converter.FromMySQLDateTime(rows[i].VisibilityTimestamp)
+		rows[i].VisibilityTimestamp = mdb.converter.FromOracleTimestamp(rows[i].VisibilityTimestamp)
 	}
 	return rows, nil
 }
@@ -678,7 +678,7 @@ func (mdb *db) DeleteFromTimerTasks(
 	ctx context.Context,
 	filter sqlplugin.TimerTasksFilter,
 ) (sql.Result, error) {
-	visibilityTS := mdb.converter.ToMySQLDateTime(filter.VisibilityTimestamp)
+	visibilityTS := mdb.converter.ToOracleTimestamp(filter.VisibilityTimestamp)
 	return mdb.NamedExecContext(ctx,
 		deleteTimerTaskQuery,
 		map[string]interface{}{
@@ -694,8 +694,8 @@ func (mdb *db) RangeDeleteFromTimerTasks(
 	ctx context.Context,
 	filter sqlplugin.TimerTasksRangeFilter,
 ) (sql.Result, error) {
-	minVisibilityTS := mdb.converter.ToMySQLDateTime(filter.InclusiveMinVisibilityTimestamp)
-	maxVisibilityTS := mdb.converter.ToMySQLDateTime(filter.ExclusiveMaxVisibilityTimestamp)
+	minVisibilityTS := mdb.converter.ToOracleTimestamp(filter.InclusiveMinVisibilityTimestamp)
+	maxVisibilityTS := mdb.converter.ToOracleTimestamp(filter.ExclusiveMaxVisibilityTimestamp)
 
 	return mdb.NamedExecContext(ctx,
 		rangeDeleteTimerTaskQuery,

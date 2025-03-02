@@ -5,39 +5,46 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 	"strings"
+
+	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
 
-var (
-	templateInsertWorkflowExecution = fmt.Sprintf(
-		`INSERT INTO executions_visibility (%s)
-		VALUES (%s)
-		ON DUPLICATE KEY UPDATE run_id = VALUES(run_id)`,
-		strings.Join(sqlplugin.DbFields, ", "),
-		sqlplugin.BuildNamedPlaceholder(sqlplugin.DbFields...),
-	)
-
+const (
 	templateInsertCustomSearchAttributes = `
-		INSERT INTO custom_search_attributes (
-			namespace_id, run_id, search_attributes
-		) VALUES (:namespace_id, :run_id, :search_attributes)
-		ON DUPLICATE KEY UPDATE run_id = VALUES(run_id)`
-
-	templateUpsertWorkflowExecution = fmt.Sprintf(
-		`INSERT INTO executions_visibility (%s)
-		VALUES (%s)
-		%s`,
-		strings.Join(sqlplugin.DbFields, ", "),
-		sqlplugin.BuildNamedPlaceholder(sqlplugin.DbFields...),
-		buildOnDuplicateKeyUpdate(sqlplugin.DbFields...),
-	)
+		MERGE INTO custom_search_attributes t
+		USING (
+			SELECT 
+				:namespace_id as namespace_id,
+				:run_id as run_id,
+				:search_attributes as search_attributes
+			FROM dual
+		) s
+		ON (t.namespace_id = s.namespace_id AND t.run_id = s.run_id)
+		WHEN MATCHED THEN
+			UPDATE SET search_attributes = s.search_attributes
+		WHEN NOT MATCHED THEN
+			INSERT (namespace_id, run_id, search_attributes)
+			VALUES (s.namespace_id, s.run_id, s.search_attributes)`
 
 	templateUpsertCustomSearchAttributes = `
-		INSERT INTO custom_search_attributes (
-			namespace_id, run_id, search_attributes
-		) VALUES (:namespace_id, :run_id, :search_attributes)
-		ON DUPLICATE KEY UPDATE search_attributes = VALUES(search_attributes)`
+		MERGE INTO custom_search_attributes t
+		USING (
+			SELECT 
+				:namespace_id as namespace_id,
+				:run_id as run_id,
+				:search_attributes as search_attributes,
+				:_version as _version
+			FROM dual
+		) s
+		ON (t.namespace_id = s.namespace_id AND t.run_id = s.run_id)
+		WHEN MATCHED THEN
+			UPDATE SET 
+				search_attributes = CASE WHEN t._version < s._version THEN s.search_attributes ELSE t.search_attributes END,
+				_version = CASE WHEN t._version < s._version THEN s._version ELSE t._version END
+		WHEN NOT MATCHED THEN
+			INSERT (namespace_id, run_id, search_attributes, _version)
+			VALUES (s.namespace_id, s.run_id, s.search_attributes, s._version)`
 
 	templateDeleteWorkflowExecution_v8 = `
 		DELETE FROM executions_visibility
@@ -46,7 +53,32 @@ var (
 	templateDeleteCustomSearchAttributes = `
 		DELETE FROM custom_search_attributes
 		WHERE namespace_id = :namespace_id AND run_id = :run_id`
+)
 
+var (
+	templateInsertWorkflowExecution = fmt.Sprintf(
+		`INSERT INTO executions_visibility (%s)
+		VALUES (%s)`,
+		strings.Join(sqlplugin.DbFields, ", "),
+		sqlplugin.BuildNamedPlaceholder(sqlplugin.DbFields...),
+	)
+	// Oracle MERGE statement for upsert
+	templateUpsertWorkflowExecution = fmt.Sprintf(
+		`MERGE INTO executions_visibility t
+		USING (
+			SELECT %s FROM dual
+		) s
+		ON (t.namespace_id = s.namespace_id AND t.run_id = s.run_id)
+		WHEN MATCHED THEN
+			UPDATE SET %s
+		WHEN NOT MATCHED THEN
+			INSERT (%s)
+			VALUES (%s)`,
+		buildOracleDualSource(sqlplugin.DbFields),
+		buildOracleUpdateSet(sqlplugin.DbFields),
+		strings.Join(sqlplugin.DbFields, ", "),
+		strings.Join(prefixFields("s.", sqlplugin.DbFields), ", "),
+	)
 	templateGetWorkflowExecution_v8 = fmt.Sprintf(
 		`SELECT %s FROM executions_visibility
 		WHERE namespace_id = :namespace_id AND run_id = :run_id`,
@@ -54,12 +86,55 @@ var (
 	)
 )
 
-func buildOnDuplicateKeyUpdate(fields ...string) string {
-	items := make([]string, len(fields))
+// Helper function to create the source part of MERGE statement for Oracle
+func buildOracleDualSource(fields []string) string {
+	sourceParts := make([]string, len(fields))
 	for i, field := range fields {
-		items[i] = fmt.Sprintf("%s = VALUES(%s)", field, field)
+		sourceParts[i] = fmt.Sprintf(":%s as %s", field, field)
 	}
-	return fmt.Sprintf("ON DUPLICATE KEY UPDATE %s", strings.Join(items, ", "))
+	return strings.Join(sourceParts, ", ")
+}
+
+// Helper function to create the UPDATE SET part of MERGE statement for Oracle with versioning
+func buildOracleUpdateSet(fields []string) string {
+	versionIdx := -1
+	for i, field := range fields {
+		if field == sqlplugin.VersionColumnName {
+			versionIdx = i
+			break
+		}
+	}
+
+	if versionIdx < 0 {
+		// If version column isn't found, just do a regular update
+		updateParts := make([]string, len(fields))
+		for i, field := range fields {
+			updateParts[i] = fmt.Sprintf("t.%s = s.%s", field, field)
+		}
+		return strings.Join(updateParts, ", ")
+	}
+
+	// With version column, we need to update only if new version is greater
+	updateParts := make([]string, len(fields))
+	for i, field := range fields {
+		if field == sqlplugin.VersionColumnName {
+			updateParts[i] = fmt.Sprintf("t.%s = CASE WHEN t.%s < s.%s THEN s.%s ELSE t.%s END",
+				field, sqlplugin.VersionColumnName, sqlplugin.VersionColumnName, field, field)
+		} else {
+			updateParts[i] = fmt.Sprintf("t.%s = CASE WHEN t.%s < s.%s THEN s.%s ELSE t.%s END",
+				field, sqlplugin.VersionColumnName, sqlplugin.VersionColumnName, field, field)
+		}
+	}
+	return strings.Join(updateParts, ", ")
+}
+
+// Helper function to prefix fields (s.field1, s.field2, ...)
+func prefixFields(prefix string, fields []string) []string {
+	result := make([]string, len(fields))
+	for i, field := range fields {
+		result[i] = prefix + field
+	}
+	return result
 }
 
 // InsertIntoVisibility inserts a row into visibility table. If an row already exist,
@@ -191,10 +266,13 @@ func (mdb *db) SelectFromVisibility(
 ) ([]sqlplugin.VisibilityRow, error) {
 	if len(filter.Query) == 0 {
 		// backward compatibility for existing tests
-		err := sqlplugin.GenerateSelectQuery(&filter, mdb.converter.ToMySQLDateTime)
+		err := sqlplugin.GenerateSelectQuery(&filter, mdb.converter.ToOracleTimestamp)
 		if err != nil {
 			return nil, err
 		}
+
+		// Oracle uses FETCH FIRST instead of LIMIT
+		filter.Query = strings.Replace(filter.Query, "LIMIT ?", "FETCH FIRST ? ROWS ONLY", 1)
 	}
 
 	var rows []sqlplugin.VisibilityRow
@@ -221,6 +299,8 @@ func (mdb *db) GetFromVisibility(
 	if err != nil {
 		return nil, err
 	}
+	defer stmt.Close()
+
 	err = stmt.GetContext(ctx, &row, filter)
 	if err != nil {
 		return nil, err
@@ -232,6 +312,7 @@ func (mdb *db) GetFromVisibility(
 	return &row, nil
 }
 
+// CountFromVisibility counts rows based on the filter
 func (mdb *db) CountFromVisibility(
 	ctx context.Context,
 	filter sqlplugin.VisibilitySelectFilter,
@@ -244,6 +325,7 @@ func (mdb *db) CountFromVisibility(
 	return count, nil
 }
 
+// CountGroupByFromVisibility performs a count with group by
 func (mdb *db) CountGroupByFromVisibility(
 	ctx context.Context,
 	filter sqlplugin.VisibilitySelectFilter,
@@ -263,27 +345,29 @@ func (mdb *db) CountGroupByFromVisibility(
 	return sqlplugin.ParseCountGroupByRows(rows, filter.GroupBy)
 }
 
+// prepareRowForDB converts time fields to the database format
 func (mdb *db) prepareRowForDB(row *sqlplugin.VisibilityRow) *sqlplugin.VisibilityRow {
 	if row == nil {
 		return nil
 	}
 	finalRow := *row
-	finalRow.StartTime = mdb.converter.ToMySQLDateTime(finalRow.StartTime)
-	finalRow.ExecutionTime = mdb.converter.ToMySQLDateTime(finalRow.ExecutionTime)
+	finalRow.StartTime = mdb.converter.ToOracleTimestamp(finalRow.StartTime)
+	finalRow.ExecutionTime = mdb.converter.ToOracleTimestamp(finalRow.ExecutionTime)
 	if finalRow.CloseTime != nil {
-		*finalRow.CloseTime = mdb.converter.ToMySQLDateTime(*finalRow.CloseTime)
+		*finalRow.CloseTime = mdb.converter.ToOracleTimestamp(*finalRow.CloseTime)
 	}
 	return &finalRow
 }
 
+// processRowFromDB converts row data from the database format to application format
 func (mdb *db) processRowFromDB(row *sqlplugin.VisibilityRow) error {
 	if row == nil {
 		return nil
 	}
-	row.StartTime = mdb.converter.FromMySQLDateTime(row.StartTime)
-	row.ExecutionTime = mdb.converter.FromMySQLDateTime(row.ExecutionTime)
+	row.StartTime = mdb.converter.FromOracleTimestamp(row.StartTime)
+	row.ExecutionTime = mdb.converter.FromOracleTimestamp(row.ExecutionTime)
 	if row.CloseTime != nil {
-		closeTime := mdb.converter.FromMySQLDateTime(*row.CloseTime)
+		closeTime := mdb.converter.FromOracleTimestamp(*row.CloseTime)
 		row.CloseTime = &closeTime
 	}
 	if row.SearchAttributes != nil {

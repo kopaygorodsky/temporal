@@ -4,51 +4,60 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/jmoiron/sqlx"
-	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 	"strings"
+
+	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
 
 const (
 	deleteMapQryTemplate = `DELETE FROM %v
 WHERE
-shard_id = ? AND
-namespace_id = ? AND
-workflow_id = ? AND
-run_id = ?`
+shard_id = :shard_id AND
+namespace_id = :namespace_id AND
+workflow_id = :workflow_id AND
+run_id = :run_id`
 
-	// %[2]v is the columns of the value struct (i.e. no primary key columns), comma separated
-	// %[3]v should be %[2]v with colons prepended.
-	// i.e. %[3]v = ",".join(":" + s for s in %[2]v)
-	// %[4]v should be %[2]v in the format of n=VALUES(n).
-	// i.e. %[4]v = ",".join(s + "=VALUES(" + s + ")" for s in %[2]v)
-	// So that this query can be used with BindNamed
-	// %[5]v should be the name of the key associated with the map
-	// e.g. for ActivityInfo it is "schedule_id"
-	setKeyInMapQryTemplate = `INSERT INTO %[1]v
-(shard_id, namespace_id, workflow_id, run_id, %[5]v, %[2]v)
-VALUES
-(:shard_id, :namespace_id, :workflow_id, :run_id, :%[5]v, %[3]v) 
-ON DUPLICATE KEY UPDATE %[5]v=VALUES(%[5]v), %[4]v;`
+	// Oracle MERGE statement for upsert operation (replaces MySQL's ON DUPLICATE KEY UPDATE)
+	setKeyInMapQryTemplate = `MERGE INTO %[1]v t
+USING (
+    SELECT 
+        :shard_id as shard_id, 
+        :namespace_id as namespace_id, 
+        :workflow_id as workflow_id, 
+        :run_id as run_id, 
+        :%[5]v as %[5]v, 
+        %[3]v 
+    FROM dual
+) s
+ON (
+    t.shard_id = s.shard_id AND 
+    t.namespace_id = s.namespace_id AND 
+    t.workflow_id = s.workflow_id AND 
+    t.run_id = s.run_id AND 
+    t.%[5]v = s.%[5]v
+)
+WHEN MATCHED THEN
+    UPDATE SET %[4]v
+WHEN NOT MATCHED THEN
+    INSERT (shard_id, namespace_id, workflow_id, run_id, %[5]v, %[2]v)
+    VALUES (s.shard_id, s.namespace_id, s.workflow_id, s.run_id, s.%[5]v, %[6]v)`
 
-	// %[2]v is the name of the key
+	// Oracle's IN clause needs special handling for SQL parameters
 	deleteKeyInMapQryTemplate = `DELETE FROM %[1]v
 WHERE
-shard_id = ? AND
-namespace_id = ? AND
-workflow_id = ? AND
-run_id = ? AND
-%[2]v IN ( ? )`
+shard_id = :shard_id AND
+namespace_id = :namespace_id AND
+workflow_id = :workflow_id AND
+run_id = :run_id AND
+%[2]v IN (%[3]v)`
 
-	// %[1]v is the name of the table
-	// %[2]v is the name of the key
-	// %[3]v is the value columns, separated by commas
+	// Get map query template
 	getMapQryTemplate = `SELECT %[2]v, %[3]v FROM %[1]v
 WHERE
-shard_id = ? AND
-namespace_id = ? AND
-workflow_id = ? AND
-run_id = ?`
+shard_id = :shard_id AND
+namespace_id = :namespace_id AND
+workflow_id = :workflow_id AND
+run_id = :run_id`
 )
 
 func stringMap(a []string, f func(string) string) []string {
@@ -64,29 +73,44 @@ func makeDeleteMapQry(tableName string) string {
 }
 
 func makeSetKeyInMapQry(tableName string, nonPrimaryKeyColumns []string, mapKeyName string) string {
+	// Create column assignments for UPDATE clause (column1 = s.column1, column2 = s.column2)
+	updateAssignments := strings.Join(stringMap(nonPrimaryKeyColumns, func(x string) string {
+		return fmt.Sprintf("t.%s = s.%s", x, x)
+	}), ", ")
+
+	// Create source column references (s.column1, s.column2)
+	sourceColumns := strings.Join(stringMap(nonPrimaryKeyColumns, func(x string) string {
+		return fmt.Sprintf("s.%s", x)
+	}), ", ")
+
+	// Create named placeholders for SELECT in USING clause
+	namedPlaceholders := strings.Join(stringMap(nonPrimaryKeyColumns, func(x string) string {
+		return fmt.Sprintf(":%s as %s", x, x)
+	}), ", ")
+
 	return fmt.Sprintf(setKeyInMapQryTemplate,
 		tableName,
-		strings.Join(nonPrimaryKeyColumns, ","),
-		strings.Join(stringMap(nonPrimaryKeyColumns, func(x string) string {
-			return ":" + x
-		}), ","),
-		strings.Join(stringMap(nonPrimaryKeyColumns, func(x string) string {
-			return x + "=VALUES(" + x + ")"
-		}), ","),
-		mapKeyName)
+		strings.Join(nonPrimaryKeyColumns, ", "),
+		namedPlaceholders,
+		updateAssignments,
+		mapKeyName,
+		sourceColumns)
 }
 
 func makeDeleteKeyInMapQry(tableName string, mapKeyName string) string {
+	// This is a placeholder - the actual placeholders will be generated at runtime
+	// based on the number of elements in the IN clause
 	return fmt.Sprintf(deleteKeyInMapQryTemplate,
 		tableName,
-		mapKeyName)
+		mapKeyName,
+		"%s")
 }
 
 func makeGetMapQryTemplate(tableName string, nonPrimaryKeyColumns []string, mapKeyName string) string {
 	return fmt.Sprintf(getMapQryTemplate,
 		tableName,
 		mapKeyName,
-		strings.Join(nonPrimaryKeyColumns, ","))
+		strings.Join(nonPrimaryKeyColumns, ", "))
 }
 
 var (
@@ -121,14 +145,15 @@ func (mdb *db) SelectAllFromActivityInfoMaps(
 	filter sqlplugin.ActivityInfoMapsAllFilter,
 ) ([]sqlplugin.ActivityInfoMapsRow, error) {
 	var rows []sqlplugin.ActivityInfoMapsRow
-	if err := mdb.SelectContext(ctx,
+	if err := mdb.NamedSelectContext(ctx,
 		&rows,
 		getActivityInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-	); err != nil {
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		}); err != nil {
 		return nil, err
 	}
 	for i := 0; i < len(rows); i++ {
@@ -145,21 +170,28 @@ func (mdb *db) DeleteFromActivityInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.ActivityInfoMapsFilter,
 ) (sql.Result, error) {
-	query, args, err := sqlx.In(
-		deleteKeyInActivityInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-		filter.ScheduleIDs,
-	)
-	if err != nil {
-		return nil, err
+	// For Oracle, we need to handle the IN clause differently
+	// Generate placeholders for the IN clause
+	inParams := make([]string, len(filter.ScheduleIDs))
+	params := make(map[string]interface{})
+
+	params["shard_id"] = filter.ShardID
+	params["namespace_id"] = filter.NamespaceID
+	params["workflow_id"] = filter.WorkflowID
+	params["run_id"] = filter.RunID
+
+	for i, id := range filter.ScheduleIDs {
+		paramName := fmt.Sprintf("id_%d", i)
+		inParams[i] = ":" + paramName
+		params[paramName] = id
 	}
-	return mdb.ExecContext(ctx,
-		mdb.Rebind(query),
-		args...,
+
+	query := fmt.Sprintf(
+		deleteKeyInActivityInfoMapQry,
+		strings.Join(inParams, ", "),
 	)
+
+	return mdb.NamedExecContext(ctx, query, params)
 }
 
 // DeleteAllFromActivityInfoMaps deletes all rows from activity_info_maps table
@@ -167,12 +199,14 @@ func (mdb *db) DeleteAllFromActivityInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.ActivityInfoMapsAllFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteActivityInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		},
 	)
 }
 
@@ -207,14 +241,15 @@ func (mdb *db) SelectAllFromTimerInfoMaps(
 	filter sqlplugin.TimerInfoMapsAllFilter,
 ) ([]sqlplugin.TimerInfoMapsRow, error) {
 	var rows []sqlplugin.TimerInfoMapsRow
-	if err := mdb.SelectContext(ctx,
+	if err := mdb.NamedSelectContext(ctx,
 		&rows,
 		getTimerInfoMapSQLQuery,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-	); err != nil {
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		}); err != nil {
 		return nil, err
 	}
 	for i := 0; i < len(rows); i++ {
@@ -231,21 +266,28 @@ func (mdb *db) DeleteFromTimerInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.TimerInfoMapsFilter,
 ) (sql.Result, error) {
-	query, args, err := sqlx.In(
-		deleteKeyInTimerInfoMapSQLQuery,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-		filter.TimerIDs,
-	)
-	if err != nil {
-		return nil, err
+	// For Oracle, we need to handle the IN clause differently
+	// Generate placeholders for the IN clause
+	inParams := make([]string, len(filter.TimerIDs))
+	params := make(map[string]interface{})
+
+	params["shard_id"] = filter.ShardID
+	params["namespace_id"] = filter.NamespaceID
+	params["workflow_id"] = filter.WorkflowID
+	params["run_id"] = filter.RunID
+
+	for i, id := range filter.TimerIDs {
+		paramName := fmt.Sprintf("id_%d", i)
+		inParams[i] = ":" + paramName
+		params[paramName] = id
 	}
-	return mdb.ExecContext(ctx,
-		mdb.Rebind(query),
-		args...,
+
+	query := fmt.Sprintf(
+		deleteKeyInTimerInfoMapSQLQuery,
+		strings.Join(inParams, ", "),
 	)
+
+	return mdb.NamedExecContext(ctx, query, params)
 }
 
 // DeleteAllFromTimerInfoMaps deletes all rows from timer_info_maps table
@@ -253,12 +295,14 @@ func (mdb *db) DeleteAllFromTimerInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.TimerInfoMapsAllFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteTimerInfoMapSQLQuery,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		},
 	)
 }
 
@@ -293,14 +337,15 @@ func (mdb *db) SelectAllFromChildExecutionInfoMaps(
 	filter sqlplugin.ChildExecutionInfoMapsAllFilter,
 ) ([]sqlplugin.ChildExecutionInfoMapsRow, error) {
 	var rows []sqlplugin.ChildExecutionInfoMapsRow
-	if err := mdb.SelectContext(ctx,
+	if err := mdb.NamedSelectContext(ctx,
 		&rows,
 		getChildExecutionInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-	); err != nil {
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		}); err != nil {
 		return nil, err
 	}
 	for i := 0; i < len(rows); i++ {
@@ -317,21 +362,28 @@ func (mdb *db) DeleteFromChildExecutionInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.ChildExecutionInfoMapsFilter,
 ) (sql.Result, error) {
-	query, args, err := sqlx.In(
-		deleteKeyInChildExecutionInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-		filter.InitiatedIDs,
-	)
-	if err != nil {
-		return nil, err
+	// For Oracle, we need to handle the IN clause differently
+	// Generate placeholders for the IN clause
+	inParams := make([]string, len(filter.InitiatedIDs))
+	params := make(map[string]interface{})
+
+	params["shard_id"] = filter.ShardID
+	params["namespace_id"] = filter.NamespaceID
+	params["workflow_id"] = filter.WorkflowID
+	params["run_id"] = filter.RunID
+
+	for i, id := range filter.InitiatedIDs {
+		paramName := fmt.Sprintf("id_%d", i)
+		inParams[i] = ":" + paramName
+		params[paramName] = id
 	}
-	return mdb.ExecContext(ctx,
-		mdb.Rebind(query),
-		args...,
+
+	query := fmt.Sprintf(
+		deleteKeyInChildExecutionInfoMapQry,
+		strings.Join(inParams, ", "),
 	)
+
+	return mdb.NamedExecContext(ctx, query, params)
 }
 
 // DeleteAllFromChildExecutionInfoMaps deletes all rows from child_execution_info_maps table
@@ -339,12 +391,14 @@ func (mdb *db) DeleteAllFromChildExecutionInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.ChildExecutionInfoMapsAllFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteChildExecutionInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		},
 	)
 }
 
@@ -379,13 +433,15 @@ func (mdb *db) SelectAllFromRequestCancelInfoMaps(
 	filter sqlplugin.RequestCancelInfoMapsAllFilter,
 ) ([]sqlplugin.RequestCancelInfoMapsRow, error) {
 	var rows []sqlplugin.RequestCancelInfoMapsRow
-	if err := mdb.SelectContext(ctx,
-		&rows, getRequestCancelInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-	); err != nil {
+	if err := mdb.NamedSelectContext(ctx,
+		&rows,
+		getRequestCancelInfoMapQry,
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		}); err != nil {
 		return nil, err
 	}
 	for i := 0; i < len(rows); i++ {
@@ -402,21 +458,28 @@ func (mdb *db) DeleteFromRequestCancelInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.RequestCancelInfoMapsFilter,
 ) (sql.Result, error) {
-	query, args, err := sqlx.In(
-		deleteKeyInRequestCancelInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-		filter.InitiatedIDs,
-	)
-	if err != nil {
-		return nil, err
+	// For Oracle, we need to handle the IN clause differently
+	// Generate placeholders for the IN clause
+	inParams := make([]string, len(filter.InitiatedIDs))
+	params := make(map[string]interface{})
+
+	params["shard_id"] = filter.ShardID
+	params["namespace_id"] = filter.NamespaceID
+	params["workflow_id"] = filter.WorkflowID
+	params["run_id"] = filter.RunID
+
+	for i, id := range filter.InitiatedIDs {
+		paramName := fmt.Sprintf("id_%d", i)
+		inParams[i] = ":" + paramName
+		params[paramName] = id
 	}
-	return mdb.ExecContext(ctx,
-		mdb.Rebind(query),
-		args...,
+
+	query := fmt.Sprintf(
+		deleteKeyInRequestCancelInfoMapQry,
+		strings.Join(inParams, ", "),
 	)
+
+	return mdb.NamedExecContext(ctx, query, params)
 }
 
 // DeleteAllFromRequestCancelInfoMaps deletes all rows from request_cancel_info_maps table
@@ -424,12 +487,14 @@ func (mdb *db) DeleteAllFromRequestCancelInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.RequestCancelInfoMapsAllFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteRequestCancelInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		},
 	)
 }
 
@@ -464,14 +529,15 @@ func (mdb *db) SelectAllFromSignalInfoMaps(
 	filter sqlplugin.SignalInfoMapsAllFilter,
 ) ([]sqlplugin.SignalInfoMapsRow, error) {
 	var rows []sqlplugin.SignalInfoMapsRow
-	if err := mdb.SelectContext(ctx,
+	if err := mdb.NamedSelectContext(ctx,
 		&rows,
 		getSignalInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-	); err != nil {
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		}); err != nil {
 		return nil, err
 	}
 	for i := 0; i < len(rows); i++ {
@@ -488,21 +554,28 @@ func (mdb *db) DeleteFromSignalInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.SignalInfoMapsFilter,
 ) (sql.Result, error) {
-	query, args, err := sqlx.In(
-		deleteKeyInSignalInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-		filter.InitiatedIDs,
-	)
-	if err != nil {
-		return nil, err
+	// For Oracle, we need to handle the IN clause differently
+	// Generate placeholders for the IN clause
+	inParams := make([]string, len(filter.InitiatedIDs))
+	params := make(map[string]interface{})
+
+	params["shard_id"] = filter.ShardID
+	params["namespace_id"] = filter.NamespaceID
+	params["workflow_id"] = filter.WorkflowID
+	params["run_id"] = filter.RunID
+
+	for i, id := range filter.InitiatedIDs {
+		paramName := fmt.Sprintf("id_%d", i)
+		inParams[i] = ":" + paramName
+		params[paramName] = id
 	}
-	return mdb.ExecContext(ctx,
-		mdb.Rebind(query),
-		args...,
+
+	query := fmt.Sprintf(
+		deleteKeyInSignalInfoMapQry,
+		strings.Join(inParams, ", "),
 	)
+
+	return mdb.NamedExecContext(ctx, query, params)
 }
 
 // DeleteAllFromSignalInfoMaps deletes all rows from signal_info_maps table
@@ -510,45 +583,66 @@ func (mdb *db) DeleteAllFromSignalInfoMaps(
 	ctx context.Context,
 	filter sqlplugin.SignalInfoMapsAllFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteSignalInfoMapQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		},
 	)
 }
 
 const (
 	deleteAllSignalsRequestedSetQry = `DELETE FROM signals_requested_sets
 WHERE
-shard_id = ? AND
-namespace_id = ? AND
-workflow_id = ? AND
-run_id = ?
-`
+shard_id = :shard_id AND
+namespace_id = :namespace_id AND
+workflow_id = :workflow_id AND
+run_id = :run_id`
 
-	createSignalsRequestedSetQry = `INSERT INTO signals_requested_sets
-(shard_id, namespace_id, workflow_id, run_id, signal_id) VALUES
-(:shard_id, :namespace_id, :workflow_id, :run_id, :signal_id)
-ON DUPLICATE KEY UPDATE signal_id = VALUES (signal_id)`
+	// Oracle MERGE statement for signals_requested_sets
+	createSignalsRequestedSetQry = `MERGE INTO signals_requested_sets t
+USING (
+    SELECT 
+        :shard_id as shard_id, 
+        :namespace_id as namespace_id, 
+        :workflow_id as workflow_id, 
+        :run_id as run_id, 
+        :signal_id as signal_id 
+    FROM dual
+) s
+ON (
+    t.shard_id = s.shard_id AND 
+    t.namespace_id = s.namespace_id AND 
+    t.workflow_id = s.workflow_id AND 
+    t.run_id = s.run_id AND 
+    t.signal_id = s.signal_id
+)
+WHEN MATCHED THEN
+    UPDATE SET signal_id = s.signal_id
+WHEN NOT MATCHED THEN
+    INSERT (shard_id, namespace_id, workflow_id, run_id, signal_id)
+    VALUES (s.shard_id, s.namespace_id, s.workflow_id, s.run_id, s.signal_id)`
 
+	// Oracle's IN clause needs parameters for each value
 	deleteSignalsRequestedSetQry = `DELETE FROM signals_requested_sets
 WHERE 
-shard_id = ? AND
-namespace_id = ? AND
-workflow_id = ? AND
-run_id = ? AND
-signal_id IN ( ? )`
+shard_id = :shard_id AND
+namespace_id = :namespace_id AND
+workflow_id = :workflow_id AND
+run_id = :run_id AND
+signal_id IN (%s)`
 
 	getSignalsRequestedSetQry = `SELECT signal_id FROM signals_requested_sets WHERE
-shard_id = ? AND
-namespace_id = ? AND
-workflow_id = ? AND
-run_id = ?`
+shard_id = :shard_id AND
+namespace_id = :namespace_id AND
+workflow_id = :workflow_id AND
+run_id = :run_id`
 )
 
-// InsertIntoSignalsRequestedSets inserts one or more rows into signals_requested_sets table
+// ReplaceIntoSignalsRequestedSets inserts one or more rows into signals_requested_sets table
 func (mdb *db) ReplaceIntoSignalsRequestedSets(
 	ctx context.Context,
 	rows []sqlplugin.SignalsRequestedSetsRow,
@@ -557,7 +651,6 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 		createSignalsRequestedSetQry,
 		rows,
 	)
-
 }
 
 // SelectAllFromSignalsRequestedSets reads all rows from signals_requested_sets table
@@ -566,14 +659,15 @@ func (mdb *db) SelectAllFromSignalsRequestedSets(
 	filter sqlplugin.SignalsRequestedSetsAllFilter,
 ) ([]sqlplugin.SignalsRequestedSetsRow, error) {
 	var rows []sqlplugin.SignalsRequestedSetsRow
-	if err := mdb.SelectContext(ctx,
+	if err := mdb.NamedSelectContext(ctx,
 		&rows,
 		getSignalsRequestedSetQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-	); err != nil {
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		}); err != nil {
 		return nil, err
 	}
 	for i := 0; i < len(rows); i++ {
@@ -590,21 +684,28 @@ func (mdb *db) DeleteFromSignalsRequestedSets(
 	ctx context.Context,
 	filter sqlplugin.SignalsRequestedSetsFilter,
 ) (sql.Result, error) {
-	query, args, err := sqlx.In(
-		deleteSignalsRequestedSetQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
-		filter.SignalIDs,
-	)
-	if err != nil {
-		return nil, err
+	// For Oracle, we need to handle the IN clause differently
+	// Generate placeholders for the IN clause
+	inParams := make([]string, len(filter.SignalIDs))
+	params := make(map[string]interface{})
+
+	params["shard_id"] = filter.ShardID
+	params["namespace_id"] = filter.NamespaceID
+	params["workflow_id"] = filter.WorkflowID
+	params["run_id"] = filter.RunID
+
+	for i, id := range filter.SignalIDs {
+		paramName := fmt.Sprintf("id_%d", i)
+		inParams[i] = ":" + paramName
+		params[paramName] = id
 	}
-	return mdb.ExecContext(ctx,
-		mdb.Rebind(query),
-		args...,
+
+	query := fmt.Sprintf(
+		deleteSignalsRequestedSetQry,
+		strings.Join(inParams, ", "),
 	)
+
+	return mdb.NamedExecContext(ctx, query, params)
 }
 
 // DeleteAllFromSignalsRequestedSets deletes all rows from signals_requested_sets table
@@ -612,11 +713,13 @@ func (mdb *db) DeleteAllFromSignalsRequestedSets(
 	ctx context.Context,
 	filter sqlplugin.SignalsRequestedSetsAllFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		deleteAllSignalsRequestedSetQry,
-		filter.ShardID,
-		filter.NamespaceID,
-		filter.WorkflowID,
-		filter.RunID,
+		map[string]interface{}{
+			"shard_id":     filter.ShardID,
+			"namespace_id": filter.NamespaceID,
+			"workflow_id":  filter.WorkflowID,
+			"run_id":       filter.RunID,
+		},
 	)
 }

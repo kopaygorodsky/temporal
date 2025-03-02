@@ -3,25 +3,35 @@ package oracle
 import (
 	"context"
 	"database/sql"
+
 	"go.temporal.io/server/common/persistence"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
 
 const (
 	templateEnqueueMessageQuery      = `INSERT INTO queue (queue_type, message_id, message_payload, message_encoding) VALUES(:queue_type, :message_id, :message_payload, :message_encoding)`
-	templateGetMessageQuery          = `SELECT message_id, message_payload, message_encoding FROM queue WHERE queue_type = ? and message_id = ?`
-	templateGetMessagesQuery         = `SELECT message_id, message_payload, message_encoding FROM queue WHERE queue_type = ? and message_id > ? and message_id <= ? ORDER BY message_id ASC LIMIT ?`
-	templateDeleteMessageQuery       = `DELETE FROM queue WHERE queue_type = ? and message_id = ?`
-	templateRangeDeleteMessagesQuery = `DELETE FROM queue WHERE queue_type = ? and message_id > ? and message_id <= ?`
+	templateGetMessageQuery          = `SELECT message_id, message_payload, message_encoding FROM queue WHERE queue_type = :queue_type AND message_id = :message_id`
+	templateGetMessagesQuery         = `SELECT message_id, message_payload, message_encoding FROM queue WHERE queue_type = :queue_type AND message_id > :min_message_id AND message_id <= :max_message_id ORDER BY message_id ASC FETCH FIRST :page_size ROWS ONLY`
+	templateDeleteMessageQuery       = `DELETE FROM queue WHERE queue_type = :queue_type AND message_id = :message_id`
+	templateRangeDeleteMessagesQuery = `DELETE FROM queue WHERE queue_type = :queue_type AND message_id > :min_message_id AND message_id <= :max_message_id`
 
 	// Note that even though this query takes a range lock that serializes all writes, it will return multiple rows
 	// whenever more than one enqueue-er blocks. This is why we max().
-	templateGetLastMessageIDQuery = `SELECT MAX(message_id) FROM queue WHERE message_id >= (SELECT message_id FROM queue WHERE queue_type=? ORDER BY message_id DESC LIMIT 1) FOR UPDATE`
+	templateGetLastMessageIDQuery = `SELECT MAX(message_id) FROM queue WHERE message_id >= (
+        SELECT message_id FROM queue 
+        WHERE queue_type=:queue_type 
+        ORDER BY message_id DESC 
+        FETCH FIRST 1 ROW ONLY
+    ) FOR UPDATE`
 
 	templateCreateQueueMetadataQuery = `INSERT INTO queue_metadata (queue_type, data, data_encoding, version) VALUES(:queue_type, :data, :data_encoding, :version)`
-	templateUpdateQueueMetadataQuery = `UPDATE queue_metadata SET data = :data, data_encoding = :data_encoding, version= :version+1 WHERE queue_type = :queue_type and version = :version`
-	templateGetQueueMetadataQuery    = `SELECT data, data_encoding, version from queue_metadata WHERE queue_type = ?`
-	templateLockQueueMetadataQuery   = templateGetQueueMetadataQuery + " FOR UPDATE"
+
+	templateUpdateQueueMetadataQuery = `UPDATE queue_metadata 
+        SET data = :data, data_encoding = :data_encoding, version = :version + 1 
+        WHERE queue_type = :queue_type AND version = :version`
+
+	templateGetQueueMetadataQuery  = `SELECT data, data_encoding, version from queue_metadata WHERE queue_type = :queue_type`
+	templateLockQueueMetadataQuery = templateGetQueueMetadataQuery + " FOR UPDATE"
 )
 
 // InsertIntoMessages inserts a new row into queue table
@@ -40,11 +50,13 @@ func (mdb *db) SelectFromMessages(
 	filter sqlplugin.QueueMessagesFilter,
 ) ([]sqlplugin.QueueMessageRow, error) {
 	var rows []sqlplugin.QueueMessageRow
-	err := mdb.SelectContext(ctx,
+	err := mdb.NamedSelectContext(ctx,
 		&rows,
 		templateGetMessageQuery,
-		filter.QueueType,
-		filter.MessageID,
+		map[string]interface{}{
+			"queue_type": filter.QueueType,
+			"message_id": filter.MessageID,
+		},
 	)
 	return rows, err
 }
@@ -54,13 +66,15 @@ func (mdb *db) RangeSelectFromMessages(
 	filter sqlplugin.QueueMessagesRangeFilter,
 ) ([]sqlplugin.QueueMessageRow, error) {
 	var rows []sqlplugin.QueueMessageRow
-	err := mdb.SelectContext(ctx,
+	err := mdb.NamedSelectContext(ctx,
 		&rows,
 		templateGetMessagesQuery,
-		filter.QueueType,
-		filter.MinMessageID,
-		filter.MaxMessageID,
-		filter.PageSize,
+		map[string]interface{}{
+			"queue_type":     filter.QueueType,
+			"min_message_id": filter.MinMessageID,
+			"max_message_id": filter.MaxMessageID,
+			"page_size":      filter.PageSize,
+		},
 	)
 	return rows, err
 }
@@ -70,10 +84,12 @@ func (mdb *db) DeleteFromMessages(
 	ctx context.Context,
 	filter sqlplugin.QueueMessagesFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		templateDeleteMessageQuery,
-		filter.QueueType,
-		filter.MessageID,
+		map[string]interface{}{
+			"queue_type": filter.QueueType,
+			"message_id": filter.MessageID,
+		},
 	)
 }
 
@@ -82,11 +98,13 @@ func (mdb *db) RangeDeleteFromMessages(
 	ctx context.Context,
 	filter sqlplugin.QueueMessagesRangeFilter,
 ) (sql.Result, error) {
-	return mdb.ExecContext(ctx,
+	return mdb.NamedExecContext(ctx,
 		templateRangeDeleteMessagesQuery,
-		filter.QueueType,
-		filter.MinMessageID,
-		filter.MaxMessageID,
+		map[string]interface{}{
+			"queue_type":     filter.QueueType,
+			"min_message_id": filter.MinMessageID,
+			"max_message_id": filter.MaxMessageID,
+		},
 	)
 }
 
@@ -96,10 +114,12 @@ func (mdb *db) GetLastEnqueuedMessageIDForUpdate(
 	queueType persistence.QueueType,
 ) (int64, error) {
 	var lastMessageID *int64
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&lastMessageID,
 		templateGetLastMessageIDQuery,
-		queueType,
+		map[string]interface{}{
+			"queue_type": queueType,
+		},
 	)
 	if lastMessageID == nil {
 		// The layer of code above us expects ErrNoRows when the queue is empty. MAX() yields
@@ -135,10 +155,12 @@ func (mdb *db) SelectFromQueueMetadata(
 	filter sqlplugin.QueueMetadataFilter,
 ) (*sqlplugin.QueueMetadataRow, error) {
 	var row sqlplugin.QueueMetadataRow
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&row,
 		templateGetQueueMetadataQuery,
-		filter.QueueType,
+		map[string]interface{}{
+			"queue_type": filter.QueueType,
+		},
 	)
 	if err != nil {
 		return nil, err
@@ -151,10 +173,12 @@ func (mdb *db) LockQueueMetadata(
 	filter sqlplugin.QueueMetadataFilter,
 ) (*sqlplugin.QueueMetadataRow, error) {
 	var row sqlplugin.QueueMetadataRow
-	err := mdb.GetContext(ctx,
+	err := mdb.NamedGetContext(ctx,
 		&row,
 		templateLockQueueMetadataQuery,
-		filter.QueueType,
+		map[string]interface{}{
+			"queue_type": filter.QueueType,
+		},
 	)
 	if err != nil {
 		return nil, err

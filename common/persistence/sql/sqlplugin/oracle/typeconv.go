@@ -3,36 +3,41 @@ package oracle
 import "time"
 
 var (
-	minMySQLDateTime = getMinMySQLDateTime()
+	minOracleTimestamp = getMinOracleTimestamp()
 )
 
 type (
 	// DataConverter defines the API for conversions to/from
-	// go types to mysql datatypes
+	// go types to oracle datatypes
 	DataConverter interface {
-		ToMySQLDateTime(t time.Time) time.Time
-		FromMySQLDateTime(t time.Time) time.Time
+		ToOracleTimestamp(t time.Time) time.Time
+		FromOracleTimestamp(t time.Time) time.Time
 	}
 	converter struct{}
 )
 
-// ToMySQLDateTime converts to time to MySQL datetime
-func (c *converter) ToMySQLDateTime(t time.Time) time.Time {
+// NewConverter returns a new instance of DataConverter
+func NewConverter() DataConverter {
+	return &converter{}
+}
+
+// ToOracleTimestamp converts time to Oracle timestamp
+func (c *converter) ToOracleTimestamp(t time.Time) time.Time {
 	if t.IsZero() {
-		return minMySQLDateTime
+		return minOracleTimestamp
 	}
 	return t.UTC().Truncate(time.Microsecond)
 }
 
-// FromMySQLDateTime converts mysql datetime and returns go time
-func (c *converter) FromMySQLDateTime(t time.Time) time.Time {
-	if t.Equal(minMySQLDateTime) {
+// FromOracleTimestamp converts Oracle timestamp and returns go time
+func (c *converter) FromOracleTimestamp(t time.Time) time.Time {
+	if t.Equal(minOracleTimestamp) {
 		return time.Time{}.UTC()
 	}
 	return t.UTC()
 }
 
-func getMinMySQLDateTime() time.Time {
+func getMinOracleTimestamp() time.Time {
 	t, err := time.Parse(time.RFC3339, "1000-01-01T00:00:00Z")
 	if err != nil {
 		return time.Unix(0, 0).UTC()
