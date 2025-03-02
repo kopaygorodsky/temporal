@@ -68,6 +68,13 @@ const (
 	PostgresPort = "POSTGRES_PORT"
 	// PostgresDefaultPort Postgres default port
 	PostgresDefaultPort = 5432
+
+	// OracleSeeds env
+	OracleSeeds = "ORACLE_SEEDS"
+	// OraclePort env
+	OraclePort = "ORACLE_PORT"
+	// OracleDefaultPort is a default port
+	OracleDefaultPort = 1521
 )
 
 type varSpec struct {
@@ -115,6 +122,14 @@ var envVars = []varSpec{
 	{
 		name:       ESVersion,
 		getDefault: func() string { return ESDefaultVersion },
+	},
+	{
+		name:       OracleSeeds,
+		getDefault: GetLocalhostIP,
+	},
+	{
+		name:       OraclePort,
+		getDefault: func() string { return strconv.Itoa(OracleDefaultPort) },
 	},
 }
 
@@ -221,6 +236,28 @@ func GetPostgreSQLPort() int {
 	p, err := strconv.Atoi(port)
 	if err != nil {
 		panic(fmt.Sprintf("error getting env %v", PostgresPort))
+	}
+	return p
+}
+
+// GetOracleAddress return the Oracle address
+func GetOracleAddress() string {
+	addr := os.Getenv(OracleSeeds)
+	if addr == "" {
+		addr = GetLocalhostIP()
+	}
+	return addr
+}
+
+// GetOraclePort returns oracle db port
+func GetOraclePort() int {
+	port := os.Getenv(OraclePort)
+	if port == "" {
+		return OracleDefaultPort
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		panic(fmt.Sprintf("error getting env %v", OraclePort))
 	}
 	return p
 }

@@ -40,6 +40,7 @@ require (
 	github.com/prometheus/client_model v0.6.1
 	github.com/prometheus/common v0.62.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/sijms/go-ora/v2 v2.8.24
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.10.0
 	github.com/temporalio/ringpop-go v0.0.0-20250130211428-b97329e994f7

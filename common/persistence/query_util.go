@@ -40,6 +40,7 @@ const (
 	sqlLeftParenthesis  = '('
 	sqlRightParenthesis = ')'
 	sqlBeginKeyword     = "begin"
+	sqlCaseKeyword      = "case"
 	sqlEndKeyword       = "end"
 	sqlLineComment      = "--"
 	sqlSingleQuote      = '\''
@@ -79,7 +80,7 @@ func LoadAndSplitQueryFromReaders(
 		contentStr := string(bytes.ToLower(content))
 		for i, j := 0, 0; i < n; i = j {
 			// stack to keep track of open parenthesis/blocks
-			var st []byte
+			var st []string
 			var stmtBuilder strings.Builder
 
 		stmtLoop:
@@ -92,23 +93,28 @@ func LoadAndSplitQueryFromReaders(
 					}
 
 				case sqlLeftParenthesis:
-					st = append(st, sqlLeftParenthesis)
+					st = append(st, string(sqlLeftParenthesis))
 
 				case sqlRightParenthesis:
-					if len(st) == 0 || st[len(st)-1] != sqlLeftParenthesis {
+					if len(st) == 0 || st[len(st)-1] != string(sqlLeftParenthesis) {
 						return nil, fmt.Errorf("error reading contents: unmatched right parenthesis")
 					}
 					st = st[:len(st)-1]
 
 				case sqlBeginKeyword[0]:
 					if hasWordAt(contentStr, sqlBeginKeyword, j) {
-						st = append(st, sqlBeginKeyword[0])
+						st = append(st, sqlBeginKeyword)
 						j += len(sqlBeginKeyword) - 1
 					}
 
+				case sqlCaseKeyword[0]:
+					if hasWordAt(contentStr, sqlCaseKeyword, j) {
+						st = append(st, sqlCaseKeyword)
+						j += len(sqlCaseKeyword) - 1
+					}
 				case sqlEndKeyword[0]:
 					if hasWordAt(contentStr, sqlEndKeyword, j) {
-						if len(st) == 0 || st[len(st)-1] != sqlBeginKeyword[0] {
+						if !isEndExpected(st) {
 							return nil, fmt.Errorf("error reading contents: unmatched `END` keyword")
 						}
 						st = st[:len(st)-1]
@@ -141,13 +147,13 @@ func LoadAndSplitQueryFromReaders(
 
 			if len(st) > 0 {
 				switch st[len(st)-1] {
-				case sqlLeftParenthesis:
+				case string(sqlLeftParenthesis):
 					return nil, fmt.Errorf("error reading contents: unmatched left parenthesis")
-				case sqlBeginKeyword[0]:
-					return nil, fmt.Errorf("error reading contents: unmatched `BEGIN` keyword")
+				case sqlBeginKeyword, sqlCaseKeyword:
+					return nil, fmt.Errorf("error reading contents: unmatched `%s` keyword", st[len(st)-1])
 				default:
 					// should never enter here
-					return nil, fmt.Errorf("error reading contents: unmatched `%c`", st[len(st)-1])
+					return nil, fmt.Errorf("error reading contents: unmatched `%s`", st[len(st)-1])
 				}
 			}
 
@@ -179,4 +185,22 @@ func hasWordAt(s, word string, pos int) bool {
 
 func isAlphanumeric(c byte) bool {
 	return unicode.IsLetter(rune(c)) || unicode.IsDigit(rune(c))
+}
+
+func isEndExpected(stack []string) bool {
+	if len(stack) == 0 {
+		return false
+	}
+
+	lastItem := stack[len(stack)-1]
+
+	if lastItem == sqlBeginKeyword {
+		return true
+	}
+
+	if lastItem == sqlCaseKeyword {
+		return true
+	}
+
+	return false
 }
