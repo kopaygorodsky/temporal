@@ -35,6 +35,7 @@ import (
 	"go.temporal.io/server/common/membership"
 	"go.temporal.io/server/common/metrics"
 	"go.temporal.io/server/common/namespace"
+	commonnexus "go.temporal.io/server/common/nexus"
 	persistenceClient "go.temporal.io/server/common/persistence/client"
 	"go.temporal.io/server/common/persistence/visibility"
 	"go.temporal.io/server/common/persistence/visibility/manager"
@@ -46,6 +47,7 @@ import (
 	"go.temporal.io/server/common/resource"
 	"go.temporal.io/server/common/rpc/interceptor"
 	"go.temporal.io/server/common/searchattribute"
+	"go.temporal.io/server/common/tasktoken"
 	"go.temporal.io/server/components/callbacks"
 	"go.temporal.io/server/components/nexusoperations"
 	nexusworkflow "go.temporal.io/server/components/nexusoperations/workflow"
@@ -92,6 +94,7 @@ var Module = fx.Options(
 	fx.Provide(ServerProvider),
 	fx.Provide(NewService),
 	fx.Provide(ReplicationProgressCacheProvider),
+	fx.Provide(commonnexus.NewLoggedHTTPClientTraceProvider),
 	fx.Invoke(ServiceLifetimeHooks),
 
 	callbacks.Module,
@@ -113,7 +116,7 @@ func HandlerProvider(args NewHandlerArgs) *Handler {
 	handler := &Handler{
 		status:                       common.DaemonStatusInitialized,
 		config:                       args.Config,
-		tokenSerializer:              common.NewProtoTaskTokenSerializer(),
+		tokenSerializer:              tasktoken.NewSerializer(),
 		logger:                       args.Logger,
 		throttledLogger:              args.ThrottledLogger,
 		persistenceExecutionManager:  args.PersistenceExecutionManager,

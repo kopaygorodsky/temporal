@@ -24,6 +24,7 @@ package replication
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	historypb "go.temporal.io/api/history/v1"
@@ -38,6 +39,7 @@ import (
 	"go.temporal.io/server/common/persistence/versionhistory"
 	serviceerrors "go.temporal.io/server/common/serviceerror"
 	ctasks "go.temporal.io/server/common/tasks"
+	"go.temporal.io/server/service/history/consts"
 	"go.temporal.io/server/service/history/shard"
 )
 
@@ -151,6 +153,17 @@ func (e *ExecutableBackfillHistoryEventsTask) Execute() error {
 }
 
 func (e *ExecutableBackfillHistoryEventsTask) HandleErr(err error) error {
+	if errors.Is(err, consts.ErrDuplicate) {
+		e.MarkTaskDuplicated()
+		return nil
+	}
+	e.Logger.Error("BackFillHistoryEvent replication task encountered error",
+		tag.WorkflowNamespaceID(e.NamespaceID),
+		tag.WorkflowID(e.WorkflowID),
+		tag.WorkflowRunID(e.RunID),
+		tag.TaskID(e.ExecutableTask.TaskID()),
+		tag.Error(err),
+	)
 	switch taskErr := err.(type) {
 	case nil, *serviceerror.NotFound:
 		return nil
@@ -171,16 +184,16 @@ func (e *ExecutableBackfillHistoryEventsTask) HandleErr(err error) error {
 			ResendAttempt,
 		); syncStateErr != nil || !doContinue {
 			if syncStateErr != nil {
-				e.Logger.Error("Backfill history events replication task encountered error during sync state",
+				e.Logger.Error("BackFillHistoryEvent replication task encountered error during sync state",
 					tag.WorkflowNamespaceID(e.NamespaceID),
 					tag.WorkflowID(e.WorkflowID),
 					tag.WorkflowRunID(e.RunID),
 					tag.TaskID(e.ExecutableTask.TaskID()),
 					tag.Error(syncStateErr),
 				)
+				return err
 			}
-			// return original task processing error
-			return err
+			return nil
 		}
 		return e.Execute()
 	case *serviceerrors.RetryReplication:

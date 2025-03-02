@@ -42,6 +42,7 @@ import (
 	"go.temporal.io/server/common/namespace"
 	"go.temporal.io/server/common/persistence"
 	serviceerrors "go.temporal.io/server/common/serviceerror"
+	"go.temporal.io/server/service/history/consts"
 	"go.temporal.io/server/service/history/hsm"
 	"go.temporal.io/server/service/history/hsm/hsmtest"
 	"go.temporal.io/server/service/history/shard"
@@ -196,7 +197,7 @@ func (s *hsmStateReplicatorSuite) TestSyncHSM_Diverge_LocalEventVersionLarger() 
 			},
 		},
 	})
-	s.NoError(err)
+	s.ErrorIs(err, consts.ErrDuplicate)
 }
 
 func (s *hsmStateReplicatorSuite) TestSyncHSM_Diverge_IncomingEventVersionLarger() {
@@ -358,7 +359,7 @@ func (s *hsmStateReplicatorSuite) TestSyncHSM_IncomingStateStale() {
 			},
 		},
 	})
-	s.NoError(err)
+	s.ErrorIs(err, consts.ErrDuplicate)
 }
 
 func (s *hsmStateReplicatorSuite) TestSyncHSM_IncomingLastUpdateVersionStale() {
@@ -397,7 +398,7 @@ func (s *hsmStateReplicatorSuite) TestSyncHSM_IncomingLastUpdateVersionStale() {
 			},
 		},
 	})
-	s.NoError(err)
+	s.ErrorIs(err, consts.ErrDuplicate)
 }
 
 func (s *hsmStateReplicatorSuite) TestSyncHSM_IncomingLastUpdateVersionedTransitionStale() {
@@ -437,7 +438,7 @@ func (s *hsmStateReplicatorSuite) TestSyncHSM_IncomingLastUpdateVersionedTransit
 			},
 		},
 	})
-	s.NoError(err)
+	s.ErrorIs(err, consts.ErrDuplicate)
 }
 
 func (s *hsmStateReplicatorSuite) TestSyncHSM_IncomingLastUpdateVersionNewer() {
@@ -700,6 +701,92 @@ func (s *hsmStateReplicatorSuite) TestSyncHSM_IncomingStateNewer_WorkflowClosed(
 		},
 	})
 	s.NoError(err)
+}
+
+func (s *hsmStateReplicatorSuite) TestSyncHSM_StateMachineNotFound() {
+	const (
+		deletedMachineID = "child1"
+		initialCount     = 50
+	)
+
+	baseVersion := s.namespaceEntry.FailoverVersion()
+	persistedState := s.buildWorkflowMutableState()
+
+	// Remove the state machine to simulate deletion
+	delete(persistedState.ExecutionInfo.SubStateMachinesByType[s.stateMachineDef.Type()].MachinesById, deletedMachineID)
+
+	s.mockExecutionMgr.EXPECT().GetWorkflowExecution(gomock.Any(), &persistence.GetWorkflowExecutionRequest{
+		ShardID:     s.mockShard.GetShardID(),
+		NamespaceID: s.workflowKey.NamespaceID,
+		WorkflowID:  s.workflowKey.WorkflowID,
+		RunID:       s.workflowKey.RunID,
+	}).Return(&persistence.GetWorkflowExecutionResponse{
+		State:           persistedState,
+		DBRecordVersion: 777,
+	}, nil).AnyTimes()
+
+	testCases := []struct {
+		name           string
+		versionHistory *historyspb.VersionHistory
+		expectedError  error
+	}{
+		{
+			name: "local version higher - ignore missing state machine",
+			versionHistory: &historyspb.VersionHistory{
+				Items: []*historyspb.VersionHistoryItem{
+					{EventId: 50, Version: baseVersion - 100},
+					{EventId: 102, Version: baseVersion - 50},
+				},
+			},
+			expectedError: consts.ErrDuplicate,
+		},
+		{
+			name: "incoming version higher - ignored",
+			versionHistory: &historyspb.VersionHistory{
+				Items: []*historyspb.VersionHistoryItem{
+					{EventId: 50, Version: baseVersion - 100},
+					{EventId: 102, Version: baseVersion},
+				},
+			},
+			expectedError: consts.ErrDuplicate,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		s.T().Run(tc.name, func(t *testing.T) {
+			lastVersion := tc.versionHistory.Items[len(tc.versionHistory.Items)-1].Version
+
+			err := s.nDCHSMStateReplicator.SyncHSMState(context.Background(), &shard.SyncHSMRequest{
+				WorkflowKey:         s.workflowKey,
+				EventVersionHistory: tc.versionHistory,
+				StateMachineNode: &persistencespb.StateMachineNode{
+					Children: map[string]*persistencespb.StateMachineMap{
+						s.stateMachineDef.Type(): {
+							MachinesById: map[string]*persistencespb.StateMachineNode{
+								deletedMachineID: {
+									Data: []byte(hsmtest.State3),
+									InitialVersionedTransition: &persistencespb.VersionedTransition{
+										NamespaceFailoverVersion: lastVersion,
+									},
+									LastUpdateVersionedTransition: &persistencespb.VersionedTransition{
+										NamespaceFailoverVersion: lastVersion,
+									},
+									TransitionCount: initialCount,
+								},
+							},
+						},
+					},
+				},
+			})
+
+			if tc.expectedError != nil {
+				require.ErrorIs(t, err, tc.expectedError)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func (s *hsmStateReplicatorSuite) buildWorkflowMutableState() *persistencespb.WorkflowMutableState {

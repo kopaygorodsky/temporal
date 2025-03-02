@@ -213,6 +213,7 @@ func TestFindOrCreate(t *testing.T) {
 	tv1 := tv.WithUpdateIDNumber(1)
 	tv2 := tv.WithUpdateIDNumber(2)
 	tv3 := tv.WithUpdateIDNumber(3)
+	tv4 := tv.WithUpdateIDNumber(4)
 
 	t.Run("find stored update", func(t *testing.T) {
 		reg := update.NewRegistry(&mockUpdateStore{
@@ -304,7 +305,7 @@ func TestFindOrCreate(t *testing.T) {
 			limit += 1
 
 			_, existed, err = reg.FindOrCreate(context.Background(), tv2.UpdateID())
-			require.NoError(t, err, "creating update #2 should have beeen created after limit increase")
+			require.NoError(t, err, "update #2 should have beeen created after limit increase")
 			require.False(t, existed)
 			require.Equal(t, 2, reg.Len())
 		})
@@ -313,9 +314,18 @@ func TestFindOrCreate(t *testing.T) {
 			assertRejectUpdateInRegistry(t, reg, evStore, upd1)
 
 			_, existed, err = reg.FindOrCreate(context.Background(), tv3.UpdateID())
-			require.NoError(t, err, "update #3 should be created after #1 completed")
+			require.NoError(t, err, "update #3 should have been created after #1 completed")
 			require.False(t, existed)
 			require.Equal(t, 2, reg.Len())
+		})
+
+		t.Run("disable limit by setting it to zero", func(t *testing.T) {
+			limit = 0
+
+			_, _, err = reg.FindOrCreate(context.Background(), tv4.UpdateID())
+			require.NoError(t, err, "update #4 should have been created")
+			require.False(t, existed)
+			require.Equal(t, 3, reg.Len())
 		})
 	})
 
@@ -334,7 +344,7 @@ func TestFindOrCreate(t *testing.T) {
 
 			// create an in-flight update #1
 			upd1, existed, err := reg.FindOrCreate(context.Background(), tv1.UpdateID())
-			require.NoError(t, err, "creating update #1 should have beeen allowed")
+			require.NoError(t, err, "creating update #1 should have been allowed")
 			require.False(t, existed)
 			require.Equal(t, 1, reg.Len())
 
@@ -395,6 +405,78 @@ func TestFindOrCreate(t *testing.T) {
 			require.NoError(t, err)
 			require.False(t, existed)
 			require.Equal(t, 2, reg.Len())
+		})
+	})
+
+	t.Run("enforce inflight update size limit", func(t *testing.T) {
+		var (
+			updateSize = 300
+			reg        = update.NewRegistry(
+				emptyUpdateStore,
+				update.WithInFlightSizeLimit(
+					func() int { return updateSize },
+				),
+			)
+			evStore = mockEventStore{Controller: effect.Immediate(context.Background())}
+		)
+
+		// create an in-flight updates
+		upd1, existed, err := reg.FindOrCreate(context.Background(), tv1.UpdateID())
+		require.NoError(t, err)
+		require.False(t, existed)
+
+		upd2, existed, err := reg.FindOrCreate(context.Background(), tv2.UpdateID())
+		require.NoError(t, err)
+		require.False(t, existed)
+
+		upd3, existed, err := reg.FindOrCreate(context.Background(), tv3.UpdateID())
+		require.NoError(t, err)
+		require.False(t, existed)
+
+		upd4, existed, err := reg.FindOrCreate(context.Background(), tv4.UpdateID())
+		require.NoError(t, err)
+		require.False(t, existed)
+
+		t.Run("admitting update #1 is allowed", func(t *testing.T) {
+			mustAdmit(t, evStore, upd1)
+		})
+
+		t.Run("rejecting update #1 allows update #2 to be admitted", func(t *testing.T) {
+			err = admit(t, evStore, upd2)
+			var resExh *serviceerror.ResourceExhausted
+			require.ErrorAs(t, err, &resExh, "admitting update #2 should be denied")
+
+			assertRejectUpdateInRegistry(t, reg, evStore, upd1)
+
+			_, existed, err = reg.FindOrCreate(context.Background(), tv2.UpdateID())
+			require.NoError(t, err, "update #2 should have been admitted")
+			require.False(t, existed)
+		})
+
+		t.Run("increasing limit allows update #3 to be admitted", func(t *testing.T) {
+			updateSize = 1
+
+			// at first, it's denied
+			err = admit(t, evStore, upd3)
+			var resExh *serviceerror.ResourceExhausted
+			require.ErrorAs(t, err, &resExh, "admitting update #3 should be denied")
+
+			updateSize = 1024
+
+			mustAdmit(t, evStore, upd3)
+		})
+
+		t.Run("disabling limit allows update #4 to be admitted", func(t *testing.T) {
+			updateSize = 1
+
+			// at first, it's denied
+			err = admit(t, evStore, upd4)
+			var resExh *serviceerror.ResourceExhausted
+			require.ErrorAs(t, err, &resExh, "admitting update #4 should be denied")
+
+			updateSize = 0
+
+			mustAdmit(t, evStore, upd4)
 		})
 	})
 }
@@ -766,7 +848,7 @@ func TestTryResurrect(t *testing.T) {
 		reg := update.NewRegistry(
 			emptyUpdateStore,
 			update.WithInFlightLimit(
-				func() int { return 0 },
+				func() int { return 1 },
 			),
 		)
 		msg := &protocolpb.Message{Body: MarshalAny(t, &updatepb.Acceptance{
@@ -778,22 +860,98 @@ func TestTryResurrect(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("enforce total update limit", func(t *testing.T) {
+	t.Run("still enforce total update limit", func(t *testing.T) {
 		reg := update.NewRegistry(
 			emptyUpdateStore,
 			update.WithTotalLimit(
-				func() int { return 0 },
+				func() int { return 1 },
 			),
 		)
-		msg := &protocolpb.Message{Body: MarshalAny(t, &updatepb.Acceptance{
-			AcceptedRequestMessageId:         tv.MessageID(),
-			AcceptedRequestSequencingEventId: testSequencingEventID,
-		})}
 
+		// 1st is allowed
+		msg := &protocolpb.Message{Body: MarshalAny(t, &updatepb.Acceptance{
+			AcceptedRequestMessageId: "0",
+			AcceptedRequest:          &updatepb.Request{},
+		})}
 		_, err := reg.TryResurrect(context.Background(), msg)
+		require.NoError(t, err)
+		require.Equal(t, 1, reg.Len())
+
+		// 2nd is denied
+		msg = &protocolpb.Message{Body: MarshalAny(t, &updatepb.Acceptance{
+			AcceptedRequestMessageId: "1",
+			AcceptedRequest:          &updatepb.Request{},
+		})}
+		_, err = reg.TryResurrect(context.Background(), msg)
 		var failedPrecon *serviceerror.FailedPrecondition
 		require.ErrorAs(t, err, &failedPrecon)
-		require.Equal(t, 0, reg.Len())
+		require.Equal(t, 1, reg.Len())
+	})
+}
+
+func TestSuggestContinueAsNew(t *testing.T) {
+	var (
+		tv         = testvars.New(t)
+		limit      = 4
+		suggestCAN = 0.5
+		reg        = update.NewRegistry(
+			emptyUpdateStore,
+			update.WithTotalLimit(func() int {
+				return limit
+			}),
+			update.WithTotalLimitSuggestCAN(func() float64 {
+				return suggestCAN
+			}))
+	)
+
+	t.Run("do not suggest Continue-As-New for empty registry", func(t *testing.T) {
+		require.False(t, reg.SuggestContinueAsNew())
+	})
+
+	t.Run("do not suggest Continue-As-New before limit is reached", func(t *testing.T) {
+		_, existed, err := reg.FindOrCreate(context.Background(), tv.WithUpdateIDNumber(1).UpdateID())
+		require.NoError(t, err)
+		require.False(t, existed)
+		require.Equal(t, 1, reg.Len()) // ie 25% of the limit, ie below the suggestion threshold of 2
+
+		require.False(t, reg.SuggestContinueAsNew())
+	})
+
+	t.Run("suggest Continue-As-New when limit is reached", func(t *testing.T) {
+		_, existed, err := reg.FindOrCreate(context.Background(), tv.WithUpdateIDNumber(2).UpdateID())
+		require.NoError(t, err)
+		require.False(t, existed)
+		require.Equal(t, 2, reg.Len()) // ie 50% of the limit, ie at the suggestion threshold of 2
+
+		require.True(t, reg.SuggestContinueAsNew())
+
+		_, existed, err = reg.FindOrCreate(context.Background(), tv.WithUpdateIDNumber(3).UpdateID())
+		require.NoError(t, err)
+		require.False(t, existed)
+		require.Equal(t, 3, reg.Len()) // ie 75% of the limit, ie above the suggestion threshold of 2
+
+		require.True(t, reg.SuggestContinueAsNew())
+	})
+
+	t.Run("do not suggest Continue-As-New after limit is increased", func(t *testing.T) {
+		limit = 10
+		require.False(t, reg.SuggestContinueAsNew())
+	})
+
+	t.Run("disable suggestion by setting threshold to zero", func(t *testing.T) {
+		limit = 1 // lower total limit
+		require.True(t, reg.SuggestContinueAsNew())
+
+		suggestCAN = 0 // disable CAN suggestion
+		require.False(t, reg.SuggestContinueAsNew())
+	})
+
+	t.Run("disable suggestion by setting total limit to zero", func(t *testing.T) {
+		suggestCAN = 1 // enable CAN suggestion
+		require.True(t, reg.SuggestContinueAsNew())
+
+		limit = 0 // disable total limit
+		require.False(t, reg.SuggestContinueAsNew())
 	})
 }
 

@@ -28,7 +28,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"testing"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -47,8 +46,11 @@ import (
 )
 
 type (
+	Helper interface {
+		Helper()
+	}
 	TaskPoller struct {
-		t         *testing.T
+		t         Helper
 		client    workflowservice.WorkflowServiceClient
 		namespace string
 	}
@@ -67,6 +69,7 @@ type (
 	options struct {
 		tv      *testvars.TestVars
 		timeout time.Duration
+		ctx     context.Context
 	}
 	optionFunc func(*options)
 )
@@ -90,12 +93,18 @@ var (
 			o.timeout = timeout
 		}
 	}
+	// WithTimeout sets a context for a task poller method (includes *all* RPC calls it has to make)
+	WithContext = func(ctx context.Context) optionFunc {
+		return func(o *options) {
+			o.ctx = ctx
+		}
+	}
 	NoWorkflowTaskAvailable = errors.New("taskpoller test helper timed out while waiting for the PollWorkflowTaskQueue API response, meaning no workflow task was ever created")
 	NoActivityTaskAvailable = errors.New("taskpoller test helper timed out while waiting for the PollActivityTaskQueue API response, meaning no activity task was ever created")
 )
 
 func New(
-	t *testing.T,
+	t Helper,
 	client workflowservice.WorkflowServiceClient,
 	namespace string,
 ) *TaskPoller {
@@ -676,5 +685,8 @@ func newOptions(
 }
 
 func newContext(opts *options) (context.Context, context.CancelFunc) {
+	if opts.ctx != nil {
+		return rpc.NewContextFromParentWithTimeoutAndVersionHeaders(opts.ctx, opts.timeout*debug.TimeoutMultiplier)
+	}
 	return rpc.NewContextWithTimeoutAndVersionHeaders(opts.timeout * debug.TimeoutMultiplier)
 }

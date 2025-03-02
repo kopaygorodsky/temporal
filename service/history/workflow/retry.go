@@ -81,6 +81,20 @@ func getBackoffInterval(
 	return nextBackoffInterval(now, currentAttempt, maxAttempts, initInterval, maxInterval, expirationTime, backoffCoefficient, ExponentialBackoffAlgorithm)
 }
 
+func nextRetryDelayFrom(failure *failurepb.Failure) *time.Duration {
+	var delay *time.Duration
+	afi, ok := failure.GetFailureInfo().(*failurepb.Failure_ApplicationFailureInfo)
+	if !ok {
+		return delay
+	}
+	p := afi.ApplicationFailureInfo.GetNextRetryDelay()
+	if p != nil {
+		d := p.AsDuration()
+		delay = &d
+	}
+	return delay
+}
+
 func nextBackoffInterval(
 	now time.Time,
 	currentAttempt int32,
@@ -256,6 +270,7 @@ func SetupNewWorkflowForRetryOrCron(
 		CronSchedule:             startAttr.CronSchedule,
 		Memo:                     startAttr.Memo,
 		SearchAttributes:         startAttr.SearchAttributes,
+		CompletionCallbacks:      startAttr.CompletionCallbacks,
 	}
 
 	attempt := int32(1)

@@ -268,7 +268,7 @@ func (c *ContextImpl) LoadMutableState(ctx context.Context, shardContext shard.C
 			return nil, err
 		}
 
-		c.MutableState, err = NewMutableStateFromDB(
+		mutableState, err := NewMutableStateFromDB(
 			shardContext,
 			shardContext.GetEventsCache(),
 			c.logger,
@@ -279,6 +279,13 @@ func (c *ContextImpl) LoadMutableState(ctx context.Context, shardContext shard.C
 		if err != nil {
 			return nil, err
 		}
+
+		// NOTE: we can't not assigned the result directly to c.MutableState like below
+		// c.MutableState, err = NewMutableStateFromDB(...)
+		// Otherwise c.MutableState (an interface) will not be nil, but can point to a nil *MutableStateImpl pointer
+		// returned by NewMutableStateFromDB().
+		// Thus causing NPE (e.g. when calling c.Clear()) or other unexpected behavior.
+		c.MutableState = mutableState
 	}
 
 	flushBeforeReady, err := c.MutableState.StartTransaction(namespaceEntry)
@@ -985,7 +992,7 @@ func (c *ContextImpl) UpdateRegistry(ctx context.Context) update.Registry {
 	}
 
 	if c.updateRegistry == nil {
-		nsIDStr := c.MutableState.GetNamespaceEntry().ID().String()
+		nsName := c.MutableState.GetNamespaceEntry().Name().String()
 
 		c.updateRegistry = update.NewRegistry(
 			c.MutableState,
@@ -994,12 +1001,22 @@ func (c *ContextImpl) UpdateRegistry(ctx context.Context) update.Registry {
 			update.WithTracerProvider(trace.SpanFromContext(ctx).TracerProvider()),
 			update.WithInFlightLimit(
 				func() int {
-					return c.config.WorkflowExecutionMaxInFlightUpdates(nsIDStr)
+					return c.config.WorkflowExecutionMaxInFlightUpdates(nsName)
+				},
+			),
+			update.WithInFlightSizeLimit(
+				func() int {
+					return c.config.WorkflowExecutionMaxInFlightUpdatePayloads(nsName)
 				},
 			),
 			update.WithTotalLimit(
 				func() int {
-					return c.config.WorkflowExecutionMaxTotalUpdates(nsIDStr)
+					return c.config.WorkflowExecutionMaxTotalUpdates(nsName)
+				},
+			),
+			update.WithTotalLimitSuggestCAN(
+				func() float64 {
+					return c.config.WorkflowExecutionMaxTotalUpdatesSuggestContinueAsNewThreshold(nsName)
 				},
 			),
 		)
