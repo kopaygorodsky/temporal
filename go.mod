@@ -130,6 +130,7 @@ require (
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/sijms/go-ora/v2 v2.8.23 // indirect
 	github.com/sirupsen/logrus v1.4.2 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect

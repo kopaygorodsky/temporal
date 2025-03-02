@@ -35,6 +35,36 @@ services:
       POSTGRES_PASSWORD: temporal
     networks:
       - temporal-dev-network
+  oracle:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: oracle_main
+    restart: unless-stopped
+    ports:
+      - "1521:1521"  # Oracle SQL*Net Listener
+      - "5500:5500"  # Enterprise Manager Express
+    environment:
+      - ORACLE_PWD=temporal
+      - ORACLE_CHARACTERSET=AL32UTF8
+      - ORACLE_SID=FREE
+    volumes:
+      - ./oracle-temporal-data:/opt/oracle/oradata  # Persistent storage for database files
+    networks:
+      - temporal-dev-network
+  oracle-visibility:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: oracle_visibility
+    restart: unless-stopped
+    ports:
+      - "1522:1521"  # Oracle SQL*Net Listener
+      - "5501:5500"  # Enterprise Manager Express
+    environment:
+      - ORACLE_PWD=temporal
+      - ORACLE_CHARACTERSET=AL32UTF8
+      - ORACLE_SID=FREE
+    volumes:
+      - ./oracle-temporal-visibility-data:/opt/oracle/oradata  # Persistent storage for database files
+    networks:
+      - temporal-dev-network
   elasticsearch:
     image: elasticsearch:7.10.1
     container_name: temporal-dev-elasticsearch
