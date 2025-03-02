@@ -131,7 +131,7 @@ func (s *TestCluster) TearDownTestDatabase() {
 func (s *TestCluster) CreateDatabase() {
 	cfg2 := s.cfg
 	// NOTE need to connect with empty name to create new database
-	if cfg2.PluginName != "sqlite" {
+	if cfg2.PluginName != "sqlite" && cfg2.PluginName != "oracle" {
 		cfg2.DatabaseName = ""
 	}
 
@@ -221,9 +221,21 @@ func (s *TestCluster) LoadSchema(schemaFile string) {
 	}()
 
 	for _, stmt := range statements {
+		if s.cfg.PluginName == "oracle" {
+			stmt = prepareOracleSQLStmt(stmt)
+		}
 		if err = db.Exec(stmt); err != nil {
 			s.logger.Fatal("LoadSchema", tag.Error(err))
 		}
 	}
 	s.logger.Info("loaded schema")
+}
+
+//@todo will be removed once oracle parser is written
+func prepareOracleSQLStmt(stmt string) string {
+	if stmt[len(stmt)-1] == ';' {
+		return stmt[:len(stmt)-1]
+	}
+
+	return stmt
 }

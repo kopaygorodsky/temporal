@@ -115,9 +115,7 @@ func SetupOracleSchema(t *testing.T, cfg *config.SQL) {
 	}
 
 	for _, stmt := range statements {
-		if stmt[len(stmt)-1] == ';' {
-			stmt = stmt[:len(stmt)-1]
-		}
+		stmt = prepareOracleSQLStmt(stmt)
 		if err = db.Exec(stmt); err != nil {
 			defer db.DropAllTables(cfg.DatabaseName)
 			t.Fatal(fmt.Errorf("error executing statement %s: %v", stmt, err))
@@ -142,11 +140,7 @@ func SetupOracleSchema(t *testing.T, cfg *config.SQL) {
 }
 
 func TearDownOracleDatabase(t *testing.T, cfg *config.SQL) {
-	adminCfg := *cfg
-	// NOTE need to connect with empty name to create new database
-	adminCfg.DatabaseName = ""
-
-	db, err := sql.NewSQLAdminDB(sqlplugin.DbKindUnknown, &adminCfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
+	db, err := sql.NewSQLAdminDB(sqlplugin.DbKindUnknown, cfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
 	if err != nil {
 		t.Fatalf("unable to create Oracle admin DB: %v", err)
 	}
@@ -156,4 +150,14 @@ func TearDownOracleDatabase(t *testing.T, cfg *config.SQL) {
 	if err != nil {
 		t.Fatalf("unable to drop Oracle database: %v", err)
 	}
+	t.Logf("Oracle database teared down")
+}
+
+//@todo will be removed once oracle parser is written
+func prepareOracleSQLStmt(stmt string) string {
+	if stmt[len(stmt)-1] == ';' {
+		return stmt[:len(stmt)-1]
+	}
+
+	return stmt
 }

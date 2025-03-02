@@ -134,3 +134,73 @@ func (s *queryUtilSuite) TestHasWordAt() {
 	s.False(hasWordAt("7BEGIN", "BEGIN", 1))
 	s.False(hasWordAt("BEGIN7", "BEGIN", 0))
 }
+
+func (s *queryUtilSuite) TestWithStupidOracleQuery() {
+	query := `CREATE TABLE executions_visibility (
+    namespace_id                       CHAR(64)        NOT NULL,
+    run_id                             CHAR(64)        NOT NULL,
+    version_num                        NUMBER(19)      DEFAULT 0 NOT NULL,
+    start_time                         TIMESTAMP(6)    NOT NULL,
+    execution_time                     TIMESTAMP(6)    NOT NULL,
+    workflow_id                        VARCHAR2(255)   NOT NULL,
+    workflow_type_name                 VARCHAR2(255)   NOT NULL,
+    status                             NUMBER(10)      NOT NULL,
+    close_time                         TIMESTAMP(6)    NULL,
+    history_length                     NUMBER(19)      NULL,
+    history_size_bytes                 NUMBER(19)      NULL,
+    execution_duration                 NUMBER(19)      NULL,
+    state_transition_count             NUMBER(19)      NULL,
+    memo                               BLOB            NULL,
+    encoding                           VARCHAR2(64)    NOT NULL,
+    task_queue                         VARCHAR2(255)   DEFAULT '' NOT NULL,
+    search_attributes                  CLOB            NULL,
+    parent_workflow_id                 VARCHAR2(255)   NULL,
+    parent_run_id                      VARCHAR2(255)   NULL,
+    root_workflow_id                   VARCHAR2(255)   DEFAULT '' NOT NULL,
+    root_run_id                        VARCHAR2(255)   DEFAULT '' NOT NULL,
+    BatcherUser                        VARCHAR2(255)   GENERATED ALWAYS AS (
+                                                          JSON_VALUE(search_attributes, '$.BatcherUser' 
+                                                          RETURNING VARCHAR2(255))
+                                                       ) VIRTUAL,
+    TemporalScheduledStartTime         TIMESTAMP(6)    GENERATED ALWAYS AS (
+                                                          TO_TIMESTAMP_TZ(
+                                                             JSON_VALUE(search_attributes, '$.TemporalScheduledStartTime' 
+                                                             RETURNING VARCHAR2(255)), 
+                                                             'YYYY-MM-DD"T"HH24:MI:SS.FFTZH:TZM'
+                                                          )
+                                                       ) VIRTUAL,
+    TemporalScheduledById              VARCHAR2(255)   GENERATED ALWAYS AS (
+                                                          JSON_VALUE(search_attributes, '$.TemporalScheduledById' 
+                                                          RETURNING VARCHAR2(255))
+                                                       ) VIRTUAL,
+    TemporalSchedulePaused             NUMBER(1)       GENERATED ALWAYS AS (
+                                                          CASE JSON_VALUE(search_attributes, '$.TemporalSchedulePaused' 
+                                                               RETURNING VARCHAR2(5))
+                                                               WHEN 'true' THEN 1 
+                                                               WHEN 'false' THEN 0 
+                                                               ELSE NULL 
+                                                          END
+                                                       ) VIRTUAL,
+    TemporalNamespaceDivision          VARCHAR2(255)   GENERATED ALWAYS AS (
+                                                          JSON_VALUE(search_attributes, '$.TemporalNamespaceDivision' 
+                                                          RETURNING VARCHAR2(255))
+                                                       ) VIRTUAL,
+    TemporalWorkerDeploymentVersion    VARCHAR2(255)   GENERATED ALWAYS AS (
+                                                          JSON_VALUE(search_attributes, '$.TemporalWorkerDeploymentVersion' 
+                                                          RETURNING VARCHAR2(255))
+                                                       ) VIRTUAL,
+    TemporalWorkflowVersioningBehavior VARCHAR2(255)   GENERATED ALWAYS AS (
+                                                          JSON_VALUE(search_attributes, '$.TemporalWorkflowVersioningBehavior' 
+                                                          RETURNING VARCHAR2(255))
+                                                       ) VIRTUAL,
+    TemporalWorkerDeployment           VARCHAR2(255)   GENERATED ALWAYS AS (
+                                                          JSON_VALUE(search_attributes, '$.TemporalWorkerDeployment' 
+                                                          RETURNING VARCHAR2(255))
+                                                       ) VIRTUAL,
+    PRIMARY KEY (namespace_id, run_id));
+`
+
+	statements, err := LoadAndSplitQueryFromReaders([]io.Reader{bytes.NewBufferString(query)})
+	s.Error(err, "error reading contents: unmatched `END` keyword")
+	s.Nil(statements)
+}

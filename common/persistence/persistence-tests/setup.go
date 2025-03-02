@@ -126,6 +126,7 @@ func GetOracleTestClusterOption() *TestBaseOptions {
 		SQLDBPluginName: oracle.PluginName,
 		DBUsername:      testOracleUser,
 		DBPassword:      testOraclePassword,
+		DBName:          "FREE",
 		DBHost:          environment.GetOracleAddress(),
 		DBPort:          environment.GetOraclePort(),
 		SchemaDir:       testOracleSchemaDir,
