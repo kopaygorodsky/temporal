@@ -84,8 +84,8 @@ func (mdb *db) InsertIntoHistoryNode(
 		addHistoryNodesQuery,
 		map[string]interface{}{
 			"shard_id":      row.ShardID,
-			"tree_id":       row.TreeID,
-			"branch_id":     row.BranchID,
+			"tree_id":       row.TreeID.Downcast(),
+			"branch_id":     row.BranchID.Downcast(),
 			"node_id":       row.NodeID,
 			"prev_txn_id":   row.PrevTxnID,
 			"txn_id":        row.TxnID,
@@ -105,8 +105,8 @@ func (mdb *db) DeleteFromHistoryNode(
 		deleteHistoryNodeQuery,
 		map[string]interface{}{
 			"shard_id":  row.ShardID,
-			"tree_id":   row.TreeID,
-			"branch_id": row.BranchID,
+			"tree_id":   row.TreeID.Downcast(),
+			"branch_id": row.BranchID.Downcast(),
 			"node_id":   row.NodeID,
 			"txn_id":    row.TxnID,
 		})
@@ -130,8 +130,8 @@ func (mdb *db) RangeSelectFromHistoryNode(
 	if filter.ReverseOrder {
 		params = map[string]interface{}{
 			"shard_id":    filter.ShardID,
-			"tree_id":     filter.TreeID,
-			"branch_id":   filter.BranchID,
+			"tree_id":     filter.TreeID.Downcast(),
+			"branch_id":   filter.BranchID.Downcast(),
 			"min_node_id": filter.MinNodeID,
 			"max_node_id": filter.MaxNodeID,
 			"max_txn_id":  -filter.MaxTxnID, // Note the negation
@@ -140,8 +140,8 @@ func (mdb *db) RangeSelectFromHistoryNode(
 	} else {
 		params = map[string]interface{}{
 			"shard_id":    filter.ShardID,
-			"tree_id":     filter.TreeID,
-			"branch_id":   filter.BranchID,
+			"tree_id":     filter.TreeID.Downcast(),
+			"branch_id":   filter.BranchID.Downcast(),
 			"min_node_id": filter.MinNodeID,
 			"min_txn_id":  -filter.MinTxnID, // Note the negation
 			"max_node_id": filter.MaxNodeID,
@@ -170,8 +170,8 @@ func (mdb *db) RangeDeleteFromHistoryNode(
 		deleteHistoryNodesQuery,
 		map[string]interface{}{
 			"shard_id":    filter.ShardID,
-			"tree_id":     filter.TreeID,
-			"branch_id":   filter.BranchID,
+			"tree_id":     filter.TreeID.Downcast(),
+			"branch_id":   filter.BranchID.Downcast(),
 			"min_node_id": filter.MinNodeID,
 		})
 }
@@ -185,8 +185,8 @@ func (mdb *db) InsertIntoHistoryTree(
 		addHistoryTreeQuery,
 		map[string]interface{}{
 			"shard_id":      row.ShardID,
-			"tree_id":       row.TreeID,
-			"branch_id":     row.BranchID,
+			"tree_id":       row.TreeID.Downcast(),
+			"branch_id":     row.BranchID.Downcast(),
 			"data":          row.Data,
 			"data_encoding": row.DataEncoding,
 		})
@@ -203,7 +203,7 @@ func (mdb *db) SelectFromHistoryTree(
 		getHistoryTreeQuery,
 		map[string]interface{}{
 			"shard_id": filter.ShardID,
-			"tree_id":  filter.TreeID,
+			"tree_id":  filter.TreeID.Downcast(),
 		})
 	return rows, err
 }
@@ -219,8 +219,8 @@ func (mdb *db) PaginateBranchesFromHistoryTree(
 		paginateBranchesQuery,
 		map[string]interface{}{
 			"shard_id":  page.ShardID,
-			"tree_id":   page.TreeID,
-			"branch_id": page.BranchID,
+			"tree_id":   page.TreeID.Downcast(),
+			"branch_id": page.BranchID.Downcast(),
 			"page_size": page.Limit,
 		})
 	return rows, err
@@ -235,7 +235,7 @@ func (mdb *db) DeleteFromHistoryTree(
 		deleteHistoryTreeQuery,
 		map[string]interface{}{
 			"shard_id":  filter.ShardID,
-			"tree_id":   filter.TreeID,
-			"branch_id": filter.BranchID,
+			"tree_id":   filter.TreeID.Downcast(),
+			"branch_id": filter.BranchID.Downcast(),
 		})
 }

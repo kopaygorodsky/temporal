@@ -3,6 +3,7 @@ package oracle
 import (
 	"context"
 	"database/sql"
+	"go.temporal.io/server/common/persistence"
 
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
@@ -20,14 +21,12 @@ const (
 		WHERE queue_type = :queue_type AND queue_name = :queue_name AND queue_partition = :queue_partition 
 		AND message_id >= :min_message_id AND message_id <= :max_message_id`
 
-	templateGetLastMessageIDQueryV2 = `SELECT MAX(message_id) FROM queue_messages 
-		WHERE queue_type = :queue_type AND queue_name = :queue_name AND queue_partition = :queue_partition 
-		AND message_id >= (
-			SELECT message_id FROM queue_messages 
-			WHERE queue_type = :queue_type AND queue_name = :queue_name AND queue_partition = :queue_partition 
-			ORDER BY message_id DESC 
-			FETCH FIRST 1 ROW ONLY
-		) FOR UPDATE`
+	templateGetMaxMessageIDQueryV2 = `SELECT MAX(message_id) FROM queue_messages WHERE queue_type = :queue_type AND queue_name = :queue_name AND queue_partition = :queue_partition`
+
+	templateGetLastMessageIDQueryV2 = `SELECT message_id FROM queue_messages 
+                 WHERE message_id = :message_id
+                 AND queue_type = :queue_type AND queue_name = :queue_name AND queue_partition = :queue_partition
+                 FOR UPDATE`
 
 	templateCreateQueueMetadataQueryV2 = `INSERT INTO queues (queue_type, queue_name, metadata_payload, metadata_encoding) 
 		VALUES(:queue_type, :queue_name, :metadata_payload, :metadata_encoding)`
@@ -52,17 +51,34 @@ const (
 		WHERE rnum > :page_offset`
 )
 
+type localQueueV2MetadataRow struct {
+	QueueType        persistence.QueueV2Type `db:"queue_type"`
+	QueueName        string                  `db:"queue_name"`
+	MetadataPayload  []byte                  `db:"metadata_payload"`
+	MetadataEncoding string                  `db:"metadata_encoding"`
+}
+
 func (mdb *db) InsertIntoQueueV2Metadata(ctx context.Context, row *sqlplugin.QueueV2MetadataRow) (sql.Result, error) {
 	return mdb.NamedExecContext(ctx,
 		templateCreateQueueMetadataQueryV2,
-		row,
+		localQueueV2MetadataRow{
+			QueueType:        row.QueueType,
+			QueueName:        row.QueueName,
+			MetadataPayload:  row.MetadataPayload,
+			MetadataEncoding: row.MetadataEncoding,
+		},
 	)
 }
 
 func (mdb *db) UpdateQueueV2Metadata(ctx context.Context, row *sqlplugin.QueueV2MetadataRow) (sql.Result, error) {
 	return mdb.NamedExecContext(ctx,
 		templateUpdateQueueMetadataQueryV2,
-		row,
+		localQueueV2MetadataRow{
+			QueueType:        row.QueueType,
+			QueueName:        row.QueueName,
+			MetadataPayload:  row.MetadataPayload,
+			MetadataEncoding: row.MetadataEncoding,
+		},
 	)
 }
 
@@ -116,9 +132,28 @@ func (mdb *db) SelectNameFromQueueV2Metadata(ctx context.Context, filter sqlplug
 }
 
 func (mdb *db) InsertIntoQueueV2Messages(ctx context.Context, row []sqlplugin.QueueV2MessageRow) (sql.Result, error) {
+	type localQueueV2MessageRow struct {
+		QueueType       persistence.QueueV2Type `db:"queue_type"`
+		QueueName       string                  `db:"queue_name"`
+		QueuePartition  int64                   `db:"queue_partition"`
+		MessageID       int64                   `db:"message_id"`
+		MessagePayload  []byte                  `db:"message_payload"`
+		MessageEncoding string                  `db:"message_encoding"`
+	}
+	data := make([]localQueueV2MessageRow, len(row))
+	for i := range row {
+		data[i] = localQueueV2MessageRow{
+			QueueType:       row[i].QueueType,
+			QueueName:       row[i].QueueName,
+			QueuePartition:  row[i].QueuePartition,
+			MessageID:       row[i].MessageID,
+			MessagePayload:  row[i].MessagePayload,
+			MessageEncoding: row[i].MessageEncoding,
+		}
+	}
 	return mdb.NamedExecContext(ctx,
 		templateEnqueueMessageQueryV2,
-		row,
+		data,
 	)
 }
 
@@ -152,20 +187,43 @@ func (mdb *db) RangeDeleteFromQueueV2Messages(ctx context.Context, filter sqlplu
 }
 
 func (mdb *db) GetLastEnqueuedMessageIDForUpdateV2(ctx context.Context, filter sqlplugin.QueueV2Filter) (int64, error) {
-	var lastMessageID *int64
-	err := mdb.NamedGetContext(ctx,
-		&lastMessageID,
-		templateGetLastMessageIDQueryV2,
+	var maxID *int64
+
+	if err := mdb.NamedGetContext(ctx,
+		&maxID,
+		templateGetMaxMessageIDQueryV2,
 		map[string]interface{}{
 			"queue_type":      filter.QueueType,
 			"queue_name":      filter.QueueName,
 			"queue_partition": filter.Partition,
 		},
-	)
-	if lastMessageID == nil {
-		// The layer of code above us expects ErrNoRows when the queue is empty. MAX() yields
-		// null when the queue is empty, so we need to turn that into the correct error.
+	); err != nil {
+		return 0, err
+	}
+
+	if maxID == nil {
 		return 0, sql.ErrNoRows
 	}
-	return *lastMessageID, err
+
+	var lockedMessageID *int64
+
+	if err := mdb.NamedGetContext(ctx,
+		&lockedMessageID,
+		templateGetLastMessageIDQueryV2,
+		map[string]interface{}{
+			"message_id":      *maxID,
+			"queue_type":      filter.QueueType,
+			"queue_name":      filter.QueueName,
+			"queue_partition": filter.Partition,
+		},
+	); err != nil {
+		return 0, err
+	}
+
+	if lockedMessageID == nil {
+		// This should rarely happen (if the row was deleted between queries)
+		return 0, sql.ErrNoRows
+	}
+
+	return *lockedMessageID, nil
 }
