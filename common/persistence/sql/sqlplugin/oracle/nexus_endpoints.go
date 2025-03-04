@@ -90,8 +90,15 @@ func (mdb *db) ListNexusEndpoints(
 	request *sqlplugin.ListNexusEndpointsRequest,
 ) ([]sqlplugin.NexusEndpointsRow, error) {
 	var rows []sqlplugin.NexusEndpointsRow
+
+	lastID := request.LastID
+	// use a default value for last_id when it's empty
+	if len(lastID) == 0 {
+		lastID = []byte{0}
+	}
+
 	params := map[string]interface{}{
-		"last_id":    request.LastID,
+		"last_id":    lastID,
 		"limit_rows": request.Limit,
 	}
 

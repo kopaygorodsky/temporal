@@ -25,6 +25,7 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"sync/atomic"
 	"testing"
@@ -289,14 +290,41 @@ func testListNexusEndpointsExpectedErrors(t *testing.T, store persistence.NexusE
 		// Valid list
 		resp, err := store.ListNexusEndpoints(ctx, &persistence.ListNexusEndpointsRequest{PageSize: 10, LastKnownTableVersion: tableVersion.Load()})
 		require.NoError(t, err)
-		require.Contains(t, resp.Endpoints, firstEndpoint)
-		require.Contains(t, resp.Endpoints, secondEndpoint)
+		endpointsContain(t, resp.Endpoints, firstEndpoint)
+		endpointsContain(t, resp.Endpoints, secondEndpoint)
 		require.Equal(t, resp.TableVersion, tableVersion.Load())
 
 		// Table version mismatch
 		_, err = store.ListNexusEndpoints(ctx, &persistence.ListNexusEndpointsRequest{PageSize: 10, LastKnownTableVersion: 100})
 		require.ErrorContains(t, err, "nexus endpoints table version mismatch")
 	})
+}
+
+func endpointContentEqual(expected, actual persistence.InternalNexusEndpoint) bool {
+	if expected.ID != actual.ID {
+		return false
+	}
+
+	if expected.Version != actual.Version {
+		return false
+	}
+
+	// Compare DataBlob contents, focusing on the actual data
+	if expected.Data.GetEncodingType() != actual.Data.GetEncodingType() {
+		return false
+	}
+
+	return bytes.Equal(expected.Data.GetData(), actual.Data.GetData())
+}
+
+func endpointsContain(t *testing.T, endpoints []persistence.InternalNexusEndpoint, expected persistence.InternalNexusEndpoint) {
+	for i := range endpoints {
+		if endpointContentEqual(endpoints[i], expected) {
+			return
+		}
+	}
+	t.Logf("endpoints %v do not contain expected one %v", endpoints, expected)
+	t.FailNow()
 }
 
 func testDeleteNexusEndpointExpectedErrors(t *testing.T, store persistence.NexusEndpointStore, tableVersion *atomic.Int64) {
