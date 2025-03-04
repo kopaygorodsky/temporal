@@ -230,17 +230,17 @@ func (mdb *db) GetClusterMembers(
 
 	if !filter.LastHeartbeatAfter.IsZero() {
 		queryString.WriteString(templateWithHeartbeatSinceSuffix)
-		params["last_heartbeat"] = session.NewTimeStamp(filter.LastHeartbeatAfter)
+		params["last_heartbeat"] = session.NewTimeStamp(filter.LastHeartbeatAfter).AsParam()
 	}
 
 	if !filter.RecordExpiryAfter.IsZero() {
 		queryString.WriteString(templateWithRecordExpirySuffix)
-		params["record_expiry"] = session.NewTimeStamp(filter.RecordExpiryAfter)
+		params["record_expiry"] = session.NewTimeStamp(filter.RecordExpiryAfter).AsParam()
 	}
 
 	if !filter.SessionStartedAfter.IsZero() {
 		queryString.WriteString(templateWithSessionStartSuffix)
-		params["session_start"] = session.NewTimeStamp(filter.SessionStartedAfter)
+		params["session_start"] = session.NewTimeStamp(filter.SessionStartedAfter).AsParam()
 	}
 
 	if filter.HostIDGreaterThan != nil {

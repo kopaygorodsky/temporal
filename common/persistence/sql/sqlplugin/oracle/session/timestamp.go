@@ -13,10 +13,14 @@ type TimeStamp struct {
 	go_ora.TimeStamp
 }
 
-func (t *TimeStamp) ToTime() time.Time {
+func (t TimeStamp) ToTime() time.Time {
 	return time.Time(t.TimeStamp)
 }
 
-func NewTimeStamp(origTime time.Time) go_ora.TimeStamp {
-	return go_ora.TimeStamp(origTime)
+func (t TimeStamp) AsParam() go_ora.TimeStamp {
+	return t.TimeStamp
+}
+
+func NewTimeStamp(origTime time.Time) TimeStamp {
+	return TimeStamp{go_ora.TimeStamp(origTime)}
 }
