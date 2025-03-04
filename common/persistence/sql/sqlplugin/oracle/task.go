@@ -112,14 +112,32 @@ task_queue_id = :task_queue_id`
 		WHERE namespace_id = :namespace_id AND build_id = :build_id`
 )
 
+type localTasksRow struct {
+	RangeHash    uint32 `db:"range_hash"`
+	TaskQueueID  []byte `db:"task_queue_id"`
+	TaskID       int64  `db:"task_id"`
+	Data         []byte `db:"data"`
+	DataEncoding string `db:"data_encoding"`
+}
+
 // InsertIntoTasks inserts one or more rows into tasks table
 func (mdb *db) InsertIntoTasks(
 	ctx context.Context,
 	rows []sqlplugin.TasksRow,
 ) (sql.Result, error) {
+	insertRows := make([]localTasksRow, len(rows))
+	for i := range rows {
+		insertRows[i] = localTasksRow{
+			RangeHash:    rows[i].RangeHash,
+			TaskQueueID:  rows[i].TaskQueueID,
+			TaskID:       rows[i].TaskID,
+			Data:         rows[i].Data,
+			DataEncoding: rows[i].DataEncoding,
+		}
+	}
 	return mdb.NamedExecContext(ctx,
 		createTaskQry,
-		rows,
+		insertRows,
 	)
 }
 
@@ -180,6 +198,14 @@ func (mdb *db) DeleteFromTasks(
 	)
 }
 
+type localTaskQueuesRow struct {
+	RangeHash    uint32 `db:"range_hash"`
+	TaskQueueID  []byte `db:"task_queue_id"`
+	RangeID      int64  `db:"range_id"`
+	Data         []byte `db:"data"`
+	DataEncoding string `db:"data_encoding"`
+}
+
 // InsertIntoTaskQueues inserts one or more rows into task_queues table
 func (mdb *db) InsertIntoTaskQueues(
 	ctx context.Context,
@@ -187,7 +213,13 @@ func (mdb *db) InsertIntoTaskQueues(
 ) (sql.Result, error) {
 	return mdb.NamedExecContext(ctx,
 		createTaskQueueQry,
-		row,
+		localTaskQueuesRow{
+			RangeHash:    row.RangeHash,
+			TaskQueueID:  row.TaskQueueID,
+			RangeID:      row.RangeID,
+			Data:         row.Data,
+			DataEncoding: row.DataEncoding,
+		},
 	)
 }
 
@@ -198,7 +230,13 @@ func (mdb *db) UpdateTaskQueues(
 ) (sql.Result, error) {
 	return mdb.NamedExecContext(ctx,
 		updateTaskQueueQry,
-		row,
+		localTaskQueuesRow{
+			RangeHash:    row.RangeHash,
+			TaskQueueID:  row.TaskQueueID,
+			RangeID:      row.RangeID,
+			Data:         row.Data,
+			DataEncoding: row.DataEncoding,
+		},
 	)
 }
 
