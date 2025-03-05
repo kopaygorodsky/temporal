@@ -78,7 +78,7 @@ func makeSetKeyInMapQry(tableName string, nonPrimaryKeyColumns []string, mapKeyN
 		return fmt.Sprintf("t.%s = s.%s", x, x)
 	}), ", ")
 
-	// Create source column references (s.column1, s.column2)
+	// Create source column references for VALUES clause (without trailing comma)
 	sourceColumns := strings.Join(stringMap(nonPrimaryKeyColumns, func(x string) string {
 		return fmt.Sprintf("s.%s", x)
 	}), ", ")
@@ -133,9 +133,31 @@ func (mdb *db) ReplaceIntoActivityInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.ActivityInfoMapsRow,
 ) (sql.Result, error) {
+	type localActivityInfoMapsRow struct {
+		ShardID      int32  `db:"shard_id"`
+		NamespaceID  []byte `db:"namespace_id"`
+		WorkflowID   string `db:"workflow_id"`
+		RunID        []byte `db:"run_id"`
+		ScheduleID   int64  `db:"schedule_id"`
+		Data         []byte `db:"data"`
+		DataEncoding string `db:"data_encoding"`
+	}
+	insertions := make([]localActivityInfoMapsRow, len(rows))
+	for i, row := range rows {
+		insertions[i] = localActivityInfoMapsRow{
+			ShardID:      row.ShardID,
+			NamespaceID:  row.NamespaceID.Downcast(),
+			WorkflowID:   row.WorkflowID,
+			RunID:        row.RunID.Downcast(),
+			ScheduleID:   row.ScheduleID,
+			Data:         row.Data,
+			DataEncoding: row.DataEncoding,
+		}
+	}
+
 	return mdb.NamedExecContext(ctx,
 		setKeyInActivityInfoMapQry,
-		rows,
+		insertions,
 	)
 }
 
@@ -150,9 +172,9 @@ func (mdb *db) SelectAllFromActivityInfoMaps(
 		getActivityInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		}); err != nil {
 		return nil, err
 	}
@@ -176,9 +198,9 @@ func (mdb *db) DeleteFromActivityInfoMaps(
 	params := make(map[string]interface{})
 
 	params["shard_id"] = filter.ShardID
-	params["namespace_id"] = filter.NamespaceID
+	params["namespace_id"] = filter.NamespaceID.Downcast()
 	params["workflow_id"] = filter.WorkflowID
-	params["run_id"] = filter.RunID
+	params["run_id"] = filter.RunID.Downcast()
 
 	for i, id := range filter.ScheduleIDs {
 		paramName := fmt.Sprintf("id_%d", i)
@@ -203,9 +225,9 @@ func (mdb *db) DeleteAllFromActivityInfoMaps(
 		deleteActivityInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		},
 	)
 }
@@ -229,9 +251,32 @@ func (mdb *db) ReplaceIntoTimerInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.TimerInfoMapsRow,
 ) (sql.Result, error) {
+	type localTimerInfoMapsRow struct {
+		ShardID      int32  `db:"shard_id"`
+		NamespaceID  []byte `db:"namespace_id"`
+		WorkflowID   string `db:"workflow_id"`
+		RunID        []byte `db:"run_id"`
+		TimerID      string `db:"timer_id"`
+		Data         []byte `db:"data"`
+		DataEncoding string `db:"data_encoding"`
+	}
+
+	insertions := make([]localTimerInfoMapsRow, len(rows))
+
+	for i, row := range rows {
+		insertions[i] = localTimerInfoMapsRow{
+			ShardID:      row.ShardID,
+			NamespaceID:  row.NamespaceID.Downcast(),
+			WorkflowID:   row.WorkflowID,
+			RunID:        row.RunID.Downcast(),
+			TimerID:      row.TimerID,
+			Data:         row.Data,
+			DataEncoding: row.DataEncoding,
+		}
+	}
 	return mdb.NamedExecContext(ctx,
 		setKeyInTimerInfoMapSQLQuery,
-		rows,
+		insertions,
 	)
 }
 
@@ -246,9 +291,9 @@ func (mdb *db) SelectAllFromTimerInfoMaps(
 		getTimerInfoMapSQLQuery,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		}); err != nil {
 		return nil, err
 	}
@@ -272,9 +317,9 @@ func (mdb *db) DeleteFromTimerInfoMaps(
 	params := make(map[string]interface{})
 
 	params["shard_id"] = filter.ShardID
-	params["namespace_id"] = filter.NamespaceID
+	params["namespace_id"] = filter.NamespaceID.Downcast()
 	params["workflow_id"] = filter.WorkflowID
-	params["run_id"] = filter.RunID
+	params["run_id"] = filter.RunID.Downcast()
 
 	for i, id := range filter.TimerIDs {
 		paramName := fmt.Sprintf("id_%d", i)
@@ -299,9 +344,9 @@ func (mdb *db) DeleteAllFromTimerInfoMaps(
 		deleteTimerInfoMapSQLQuery,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		},
 	)
 }
@@ -325,9 +370,32 @@ func (mdb *db) ReplaceIntoChildExecutionInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.ChildExecutionInfoMapsRow,
 ) (sql.Result, error) {
+	type localChildExecutionInfoMapsRow struct {
+		ShardID      int32  `db:"shard_id"`
+		NamespaceID  []byte `db:"namespace_id"`
+		WorkflowID   string `db:"workflow_id"`
+		RunID        []byte `db:"run_id"`
+		InitiatedID  int64  `db:"initiated_id"`
+		Data         []byte `db:"data"`
+		DataEncoding string `db:"data_encoding"`
+	}
+
+	insertions := make([]localChildExecutionInfoMapsRow, len(rows))
+
+	for i, row := range rows {
+		insertions[i] = localChildExecutionInfoMapsRow{
+			ShardID:      row.ShardID,
+			NamespaceID:  row.NamespaceID.Downcast(),
+			WorkflowID:   row.WorkflowID,
+			RunID:        row.RunID.Downcast(),
+			InitiatedID:  row.InitiatedID,
+			Data:         row.Data,
+			DataEncoding: row.DataEncoding,
+		}
+	}
 	return mdb.NamedExecContext(ctx,
 		setKeyInChildExecutionInfoMapQry,
-		rows,
+		insertions,
 	)
 }
 
@@ -342,9 +410,9 @@ func (mdb *db) SelectAllFromChildExecutionInfoMaps(
 		getChildExecutionInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		}); err != nil {
 		return nil, err
 	}
@@ -368,9 +436,9 @@ func (mdb *db) DeleteFromChildExecutionInfoMaps(
 	params := make(map[string]interface{})
 
 	params["shard_id"] = filter.ShardID
-	params["namespace_id"] = filter.NamespaceID
+	params["namespace_id"] = filter.NamespaceID.Downcast()
 	params["workflow_id"] = filter.WorkflowID
-	params["run_id"] = filter.RunID
+	params["run_id"] = filter.RunID.Downcast()
 
 	for i, id := range filter.InitiatedIDs {
 		paramName := fmt.Sprintf("id_%d", i)
@@ -395,9 +463,9 @@ func (mdb *db) DeleteAllFromChildExecutionInfoMaps(
 		deleteChildExecutionInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		},
 	)
 }
@@ -421,9 +489,32 @@ func (mdb *db) ReplaceIntoRequestCancelInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.RequestCancelInfoMapsRow,
 ) (sql.Result, error) {
+	type localRequestCancelInfoMapsRow struct {
+		ShardID      int32  `db:"shard_id"`
+		NamespaceID  []byte `db:"namespace_id"`
+		WorkflowID   string `db:"workflow_id"`
+		RunID        []byte `db:"run_id"`
+		InitiatedID  int64  `db:"initiated_id"`
+		Data         []byte `db:"data"`
+		DataEncoding string `db:"data_encoding"`
+	}
+
+	insertions := make([]localRequestCancelInfoMapsRow, len(rows))
+	for i, row := range rows {
+		insertions[i] = localRequestCancelInfoMapsRow{
+			ShardID:      row.ShardID,
+			NamespaceID:  row.NamespaceID.Downcast(),
+			WorkflowID:   row.WorkflowID,
+			RunID:        row.RunID.Downcast(),
+			InitiatedID:  row.InitiatedID,
+			Data:         row.Data,
+			DataEncoding: row.DataEncoding,
+		}
+	}
+
 	return mdb.NamedExecContext(ctx,
 		setKeyInRequestCancelInfoMapQry,
-		rows,
+		insertions,
 	)
 }
 
@@ -438,9 +529,9 @@ func (mdb *db) SelectAllFromRequestCancelInfoMaps(
 		getRequestCancelInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		}); err != nil {
 		return nil, err
 	}
@@ -464,9 +555,9 @@ func (mdb *db) DeleteFromRequestCancelInfoMaps(
 	params := make(map[string]interface{})
 
 	params["shard_id"] = filter.ShardID
-	params["namespace_id"] = filter.NamespaceID
+	params["namespace_id"] = filter.NamespaceID.Downcast()
 	params["workflow_id"] = filter.WorkflowID
-	params["run_id"] = filter.RunID
+	params["run_id"] = filter.RunID.Downcast()
 
 	for i, id := range filter.InitiatedIDs {
 		paramName := fmt.Sprintf("id_%d", i)
@@ -491,9 +582,9 @@ func (mdb *db) DeleteAllFromRequestCancelInfoMaps(
 		deleteRequestCancelInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		},
 	)
 }
@@ -517,9 +608,32 @@ func (mdb *db) ReplaceIntoSignalInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.SignalInfoMapsRow,
 ) (sql.Result, error) {
+	type localSignalInfoMapsRow struct {
+		ShardID      int32  `db:"shard_id"`
+		NamespaceID  []byte `db:"namespace_id"`
+		WorkflowID   string `db:"workflow_id"`
+		RunID        []byte `db:"run_id"`
+		InitiatedID  int64  `db:"initiated_id"`
+		Data         []byte `db:"data"`
+		DataEncoding string `db:"data_encoding"`
+	}
+
+	insertions := make([]localSignalInfoMapsRow, len(rows))
+	for i, row := range rows {
+		insertions[i] = localSignalInfoMapsRow{
+			ShardID:      row.ShardID,
+			NamespaceID:  row.NamespaceID.Downcast(),
+			WorkflowID:   row.WorkflowID,
+			RunID:        row.RunID.Downcast(),
+			InitiatedID:  row.InitiatedID,
+			Data:         row.Data,
+			DataEncoding: row.DataEncoding,
+		}
+	}
+
 	return mdb.NamedExecContext(ctx,
 		setKeyInSignalInfoMapQry,
-		rows,
+		insertions,
 	)
 }
 
@@ -534,9 +648,9 @@ func (mdb *db) SelectAllFromSignalInfoMaps(
 		getSignalInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		}); err != nil {
 		return nil, err
 	}
@@ -560,9 +674,9 @@ func (mdb *db) DeleteFromSignalInfoMaps(
 	params := make(map[string]interface{})
 
 	params["shard_id"] = filter.ShardID
-	params["namespace_id"] = filter.NamespaceID
+	params["namespace_id"] = filter.NamespaceID.Downcast()
 	params["workflow_id"] = filter.WorkflowID
-	params["run_id"] = filter.RunID
+	params["run_id"] = filter.RunID.Downcast()
 
 	for i, id := range filter.InitiatedIDs {
 		paramName := fmt.Sprintf("id_%d", i)
@@ -587,9 +701,9 @@ func (mdb *db) DeleteAllFromSignalInfoMaps(
 		deleteSignalInfoMapQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		},
 	)
 }
@@ -617,11 +731,10 @@ ON (
     t.shard_id = s.shard_id AND 
     t.namespace_id = s.namespace_id AND 
     t.workflow_id = s.workflow_id AND 
-    t.run_id = s.run_id AND 
-    t.signal_id = s.signal_id
+    t.run_id = s.run_id
 )
 WHEN MATCHED THEN
-    UPDATE SET signal_id = s.signal_id
+    UPDATE SET t.signal_id = s.signal_id
 WHEN NOT MATCHED THEN
     INSERT (shard_id, namespace_id, workflow_id, run_id, signal_id)
     VALUES (s.shard_id, s.namespace_id, s.workflow_id, s.run_id, s.signal_id)`
@@ -647,9 +760,26 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 	ctx context.Context,
 	rows []sqlplugin.SignalsRequestedSetsRow,
 ) (sql.Result, error) {
+	type localSignalsRequestedSetsRow struct {
+		ShardID     int32  `db:"shard_id"`
+		NamespaceID []byte `db:"namespace_id"`
+		WorkflowID  string `db:"workflow_id"`
+		RunID       []byte `db:"run_id"`
+		SignalID    string `db:"signal_id"`
+	}
+	insertions := make([]localSignalsRequestedSetsRow, len(rows))
+	for i, row := range rows {
+		insertions[i] = localSignalsRequestedSetsRow{
+			ShardID:     row.ShardID,
+			NamespaceID: row.NamespaceID.Downcast(),
+			WorkflowID:  row.WorkflowID,
+			RunID:       row.RunID.Downcast(),
+			SignalID:    row.SignalID,
+		}
+	}
 	return mdb.NamedExecContext(ctx,
 		createSignalsRequestedSetQry,
-		rows,
+		insertions,
 	)
 }
 
@@ -664,9 +794,9 @@ func (mdb *db) SelectAllFromSignalsRequestedSets(
 		getSignalsRequestedSetQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		}); err != nil {
 		return nil, err
 	}
@@ -690,9 +820,9 @@ func (mdb *db) DeleteFromSignalsRequestedSets(
 	params := make(map[string]interface{})
 
 	params["shard_id"] = filter.ShardID
-	params["namespace_id"] = filter.NamespaceID
+	params["namespace_id"] = filter.NamespaceID.Downcast()
 	params["workflow_id"] = filter.WorkflowID
-	params["run_id"] = filter.RunID
+	params["run_id"] = filter.RunID.Downcast()
 
 	for i, id := range filter.SignalIDs {
 		paramName := fmt.Sprintf("id_%d", i)
@@ -717,9 +847,9 @@ func (mdb *db) DeleteAllFromSignalsRequestedSets(
 		deleteAllSignalsRequestedSetQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
-			"namespace_id": filter.NamespaceID,
+			"namespace_id": filter.NamespaceID.Downcast(),
 			"workflow_id":  filter.WorkflowID,
-			"run_id":       filter.RunID,
+			"run_id":       filter.RunID.Downcast(),
 		},
 	)
 }

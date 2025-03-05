@@ -197,17 +197,17 @@ VALUES     (:source_cluster_name,
 )
 
 type localExecutionsRow struct {
-	ShardID          int32           `db:"shard_id"`
-	NamespaceID      primitives.UUID `db:"namespace_id"`
-	WorkflowID       string          `db:"workflow_id"`
-	RunID            primitives.UUID `db:"run_id"`
-	NextEventID      int64           `db:"next_event_id"`
-	LastWriteVersion int64           `db:"last_write_version"`
-	Data             []byte          `db:"data"`
-	DataEncoding     string          `db:"data_encoding"`
-	State            []byte          `db:"state"`
-	StateEncoding    string          `db:"state_encoding"`
-	DBRecordVersion  int64           `db:"db_record_version"`
+	ShardID          int32  `db:"shard_id"`
+	NamespaceID      []byte `db:"namespace_id"`
+	WorkflowID       string `db:"workflow_id"`
+	RunID            []byte `db:"run_id"`
+	NextEventID      int64  `db:"next_event_id"`
+	LastWriteVersion int64  `db:"last_write_version"`
+	Data             []byte `db:"data"`
+	DataEncoding     string `db:"data_encoding"`
+	State            []byte `db:"state"`
+	StateEncoding    string `db:"state_encoding"`
+	DBRecordVersion  int64  `db:"db_record_version"`
 }
 
 func newLocalExecutionsRow(r *sqlplugin.ExecutionsRow) localExecutionsRow {
@@ -324,24 +324,60 @@ func (mdb *db) WriteLockExecutions(
 	return executionVersion.DBRecordVersion, executionVersion.NextEventID, err
 }
 
-type localCurrentExecutionsRow struct {
-	ShardID          int32              `db:"shard_id"`
-	NamespaceID      []byte             `db:"namespace_id"`
-	WorkflowID       string             `db:"workflow_id"`
-	RunID            []byte             `db:"run_id"`
-	CreateRequestID  string             `db:"create_request_id"`
-	StartTime        *session.TimeStamp `db:"start_time"`
-	LastWriteVersion int64              `db:"last_write_version"`
-	State            int32              `db:"state"`
-	Status           int32              `db:"status"`
-	Data             []byte             `db:"data"`
-	DataEncoding     string             `db:"data_encoding"`
+type execCurrentExecutionsRow struct {
+	ShardID          int32                           `db:"shard_id"`
+	NamespaceID      []byte                          `db:"namespace_id"`
+	WorkflowID       string                          `db:"workflow_id"`
+	RunID            []byte                          `db:"run_id"`
+	CreateRequestID  string                          `db:"create_request_id"`
+	StartTime        *go_ora.TimeStamp               `db:"start_time"`
+	LastWriteVersion int64                           `db:"last_write_version"`
+	State            enumsspb.WorkflowExecutionState `db:"state"`
+	Status           enumspb.WorkflowExecutionStatus `db:"status"`
+	Data             []byte                          `db:"data"`
+	DataEncoding     string                          `db:"data_encoding"`
 }
 
-func (r localCurrentExecutionsRow) toExternalType() sqlplugin.CurrentExecutionsRow {
-	var startTime time.Time
+func newExecCurrentExecutionsRow(row *sqlplugin.CurrentExecutionsRow) execCurrentExecutionsRow {
+	var startTime *go_ora.TimeStamp
+	if row.StartTime != nil {
+		startTimeTmp := go_ora.TimeStamp(*row.StartTime)
+		startTime = &startTimeTmp
+	}
+	return execCurrentExecutionsRow{
+		ShardID:          row.ShardID,
+		NamespaceID:      row.NamespaceID,
+		WorkflowID:       row.WorkflowID,
+		RunID:            row.RunID,
+		CreateRequestID:  row.CreateRequestID,
+		StartTime:        startTime,
+		LastWriteVersion: row.LastWriteVersion,
+		State:            row.State,
+		Status:           row.Status,
+		Data:             row.Data,
+		DataEncoding:     row.DataEncoding,
+	}
+}
+
+type queryCurrentExecutionsRow struct {
+	ShardID          int32
+	NamespaceID      primitives.UUID
+	WorkflowID       string
+	RunID            primitives.UUID
+	CreateRequestID  string
+	StartTime        *go_ora.TimeStamp
+	LastWriteVersion int64
+	State            enumsspb.WorkflowExecutionState
+	Status           enumspb.WorkflowExecutionStatus
+	Data             []byte
+	DataEncoding     string
+}
+
+func (r queryCurrentExecutionsRow) toExternalType() sqlplugin.CurrentExecutionsRow {
+	var startTime *time.Time
 	if r.StartTime != nil {
-		startTime = r.StartTime.ToTime()
+		startTimeTmp := time.Time(*r.StartTime)
+		startTime = &startTimeTmp
 	}
 	return sqlplugin.CurrentExecutionsRow{
 		ShardID:          r.ShardID,
@@ -349,33 +385,12 @@ func (r localCurrentExecutionsRow) toExternalType() sqlplugin.CurrentExecutionsR
 		WorkflowID:       r.WorkflowID,
 		RunID:            r.RunID,
 		CreateRequestID:  r.CreateRequestID,
-		StartTime:        &startTime,
+		StartTime:        startTime,
 		LastWriteVersion: r.LastWriteVersion,
-		State:            enumsspb.WorkflowExecutionState(r.State),
-		Status:           enumspb.WorkflowExecutionStatus(r.Status),
+		State:            r.State,
+		Status:           r.Status,
 		Data:             r.Data,
 		DataEncoding:     r.DataEncoding,
-	}
-}
-
-func newLocalCurrentExecutionsRow(row *sqlplugin.CurrentExecutionsRow) localCurrentExecutionsRow {
-	var starTime *session.TimeStamp
-	if row.StartTime != nil {
-		starTimeStamp := session.NewTimeStamp(*row.StartTime)
-		starTime = &starTimeStamp
-	}
-	return localCurrentExecutionsRow{
-		ShardID:          row.ShardID,
-		NamespaceID:      row.NamespaceID.Downcast(),
-		WorkflowID:       row.WorkflowID,
-		RunID:            row.RunID.Downcast(),
-		CreateRequestID:  row.CreateRequestID,
-		StartTime:        starTime,
-		LastWriteVersion: row.LastWriteVersion,
-		State:            int32(row.State),
-		Status:           int32(row.Status),
-		Data:             row.Data,
-		DataEncoding:     row.DataEncoding,
 	}
 }
 
@@ -386,7 +401,7 @@ func (mdb *db) InsertIntoCurrentExecutions(
 ) (sql.Result, error) {
 	return mdb.NamedExecContext(ctx,
 		createCurrentExecutionQuery,
-		newLocalCurrentExecutionsRow(row),
+		newExecCurrentExecutionsRow(row),
 	)
 }
 
@@ -397,7 +412,7 @@ func (mdb *db) UpdateCurrentExecutions(
 ) (sql.Result, error) {
 	return mdb.NamedExecContext(ctx,
 		updateCurrentExecutionsQuery,
-		newLocalCurrentExecutionsRow(row),
+		newExecCurrentExecutionsRow(row),
 	)
 }
 
@@ -406,7 +421,8 @@ func (mdb *db) SelectFromCurrentExecutions(
 	ctx context.Context,
 	filter sqlplugin.CurrentExecutionsFilter,
 ) (*sqlplugin.CurrentExecutionsRow, error) {
-	var row localCurrentExecutionsRow
+	var row queryCurrentExecutionsRow
+
 	err := mdb.NamedGetContext(ctx,
 		&row,
 		getCurrentExecutionQuery,
@@ -446,7 +462,7 @@ func (mdb *db) LockCurrentExecutions(
 	ctx context.Context,
 	filter sqlplugin.CurrentExecutionsFilter,
 ) (*sqlplugin.CurrentExecutionsRow, error) {
-	var row localCurrentExecutionsRow
+	var row queryCurrentExecutionsRow
 
 	err := mdb.NamedGetContext(ctx,
 		&row,
@@ -876,12 +892,12 @@ func (mdb *db) RangeDeleteFromTimerTasks(
 }
 
 type localBufferedEventsRow struct {
-	ShardID      int32           `db:"shard_id"`
-	NamespaceID  primitives.UUID `db:"namespace_id"`
-	WorkflowID   string          `db:"workflow_id"`
-	RunID        primitives.UUID `db:"run_id"`
-	Data         []byte          `db:"data"`
-	DataEncoding string          `db:"data_encoding"`
+	ShardID      int32  `db:"shard_id"`
+	NamespaceID  []byte `db:"namespace_id"`
+	WorkflowID   string `db:"workflow_id"`
+	RunID        []byte `db:"run_id"`
+	Data         []byte `db:"data"`
+	DataEncoding string `db:"data_encoding"`
 }
 
 func newLocalBufferedEventsRow(row sqlplugin.BufferedEventsRow) localBufferedEventsRow {

@@ -164,11 +164,11 @@ func (mdb *db) InsertIntoVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	result, err = tx.NamedExecContext(ctx, templateInsertWorkflowExecution, finalRow)
+	result, err = tx.ExecContext(ctx, templateInsertWorkflowExecution, finalRow)
 	if err != nil {
 		return nil, fmt.Errorf("unable to insert workflow execution: %w", err)
 	}
-	_, err = tx.NamedExecContext(ctx, templateInsertCustomSearchAttributes, finalRow)
+	_, err = tx.ExecContext(ctx, templateInsertCustomSearchAttributes, finalRow)
 	if err != nil {
 		return nil, fmt.Errorf("unable to insert custom search attributes: %w", err)
 	}
@@ -204,11 +204,11 @@ func (mdb *db) ReplaceIntoVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	result, err = tx.NamedExecContext(ctx, templateUpsertWorkflowExecution, finalRow)
+	result, err = tx.ExecContext(ctx, templateUpsertWorkflowExecution, finalRow)
 	if err != nil {
 		return nil, fmt.Errorf("unable to upsert workflow execution: %w", err)
 	}
-	_, err = tx.NamedExecContext(ctx, templateUpsertCustomSearchAttributes, finalRow)
+	_, err = tx.ExecContext(ctx, templateUpsertCustomSearchAttributes, finalRow)
 	if err != nil {
 		return nil, fmt.Errorf("unable to upsert custom search attributes: %w", err)
 	}
@@ -244,11 +244,11 @@ func (mdb *db) DeleteFromVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	_, err = mdb.NamedExecContext(ctx, templateDeleteCustomSearchAttributes, filter)
+	_, err = mdb.ExecContext(ctx, templateDeleteCustomSearchAttributes, filter)
 	if err != nil {
 		return nil, fmt.Errorf("unable to delete custom search attributes: %w", err)
 	}
-	result, err = mdb.NamedExecContext(ctx, templateDeleteWorkflowExecution_v8, filter)
+	result, err = mdb.ExecContext(ctx, templateDeleteWorkflowExecution_v8, filter)
 	if err != nil {
 		return nil, fmt.Errorf("unable to delete workflow execution: %w", err)
 	}

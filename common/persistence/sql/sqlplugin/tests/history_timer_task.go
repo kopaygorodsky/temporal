@@ -239,7 +239,7 @@ func (s *historyHistoryTimerTaskSuite) TestDeleteSelect_Single() {
 	for index := range rows {
 		rows[index].ShardID = shardID
 	}
-	s.Equal([]sqlplugin.TimerTasksRow(nil), rows)
+	s.Len(rows, 0)
 }
 
 func (s *historyHistoryTimerTaskSuite) TestDeleteSelect_Multiple() {
@@ -267,7 +267,7 @@ func (s *historyHistoryTimerTaskSuite) TestDeleteSelect_Multiple() {
 	for index := range rows {
 		rows[index].ShardID = shardID
 	}
-	s.Equal([]sqlplugin.TimerTasksRow(nil), rows)
+	s.Len(rows, 0)
 }
 
 func (s *historyHistoryTimerTaskSuite) TestInsertDeleteSelect_Single() {
@@ -305,7 +305,7 @@ func (s *historyHistoryTimerTaskSuite) TestInsertDeleteSelect_Single() {
 	for index := range rows {
 		rows[index].ShardID = shardID
 	}
-	s.Equal([]sqlplugin.TimerTasksRow(nil), rows)
+	s.Len(rows, 0)
 }
 
 func (s *historyHistoryTimerTaskSuite) TestInsertDeleteSelect_Multiple() {
@@ -349,7 +349,7 @@ func (s *historyHistoryTimerTaskSuite) TestInsertDeleteSelect_Multiple() {
 	for index := range rows {
 		rows[index].ShardID = shardID
 	}
-	s.Equal([]sqlplugin.TimerTasksRow(nil), rows)
+	s.Len(rows, 0)
 }
 
 func (s *historyHistoryTimerTaskSuite) now() time.Time {
