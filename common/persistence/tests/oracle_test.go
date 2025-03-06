@@ -177,21 +177,6 @@ func TestOracleQueueV2(t *testing.T) {
 	RunQueueV2TestSuiteForSQL(t, testData.Factory)
 }
 
-func TestOracleNexusEndpointPersistence(t *testing.T) {
-	testData, tearDown := setUpOracleTest(t)
-	defer tearDown()
-
-	tableVersion := atomic.Int64{}
-	store, err := testData.Factory.NewNexusEndpointStore()
-	if err != nil {
-		t.Fatalf("unable to create Oracle NexusEndpointStore: %v", err)
-	}
-
-	t.Run("Generic", func(t *testing.T) {
-		RunNexusEndpointTestSuite(t, store, &tableVersion)
-	})
-}
-
 // SQL store tests
 
 func TestOracleNamespaceSuite(t *testing.T) {
@@ -549,4 +534,61 @@ func TestOracleHistoryExecutionSignalSuite(t *testing.T) {
 
 	s := sqltests.NewHistoryExecutionSignalSuite(t, store)
 	suite.Run(t, s)
+}
+
+func TestOracleHistoryExecutionSignalRequestSuite(t *testing.T) {
+	cfg := NewOracleSQLConfig()
+	SetupOracleSQLDatabase(t, cfg)
+	SetupOracleSchema(t, cfg)
+	store, err := sql.NewSQLDB(sqlplugin.DbKindMain, cfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
+	if err != nil {
+		t.Fatalf("unable to create Oracle DB: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+		TearDownOracleDatabase(t, cfg)
+	}()
+
+	s := sqltests.NewHistoryExecutionSignalRequestSuite(t, store)
+	suite.Run(t, s)
+}
+
+func TestOracleVisibilitySuite(t *testing.T) {
+	cfg := NewOracleSQLConfig()
+	SetupOracleSQLDatabase(t, cfg)
+	SetupOracleSchema(t, cfg)
+	store, err := sql.NewSQLDB(sqlplugin.DbKindVisibility, cfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
+	if err != nil {
+		t.Fatalf("unable to create Oracle DB: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+		TearDownOracleDatabase(t, cfg)
+	}()
+
+	s := sqltests.NewVisibilitySuite(t, store)
+	suite.Run(t, s)
+}
+
+func TestOracleClosedConnectionError(t *testing.T) {
+	testData, tearDown := setUpOracleTest(t)
+	defer tearDown()
+
+	s := newConnectionSuite(t, testData.Factory)
+	suite.Run(t, s)
+}
+
+func TestOracleNexusEndpointPersistence(t *testing.T) {
+	testData, tearDown := setUpOracleTest(t)
+	defer tearDown()
+
+	tableVersion := atomic.Int64{}
+	store, err := testData.Factory.NewNexusEndpointStore()
+	if err != nil {
+		t.Fatalf("unable to create Oracle NexusEndpointStore: %v", err)
+	}
+
+	t.Run("Generic", func(t *testing.T) {
+		RunNexusEndpointTestSuite(t, store, &tableVersion)
+	})
 }

@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	go_ora "github.com/sijms/go-ora/v2"
+	"go.temporal.io/server/common/persistence/sql/sqlplugin/oracle/session"
 	"strings"
+	"time"
 
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
@@ -137,13 +140,154 @@ func prefixFields(prefix string, fields []string) []string {
 	return result
 }
 
+type execLocalVisibilityRow struct {
+	NamespaceID          string                 `db:"namespace_id"`
+	RunID                string                 `db:"run_id"`
+	WorkflowTypeName     string                 `db:"workflow_type_name"`
+	WorkflowID           string                 `db:"workflow_id"`
+	StartTime            go_ora.TimeStamp       `db:"start_time"`
+	ExecutionTime        go_ora.TimeStamp       `db:"execution_time"`
+	Status               int32                  `db:"status"`
+	CloseTime            *go_ora.TimeStamp      `db:"close_time"`
+	HistoryLength        *int64                 `db:"history_length"`
+	HistorySizeBytes     *int64                 `db:"history_size_bytes"`
+	ExecutionDuration    *time.Duration         `db:"execution_duration"`
+	StateTransitionCount *int64                 `db:"state_transition_count"`
+	Memo                 []byte                 `db:"memo"`
+	Encoding             string                 `db:"encoding"`
+	TaskQueue            string                 `db:"task_queue"`
+	SearchAttributes     map[string]interface{} `db:"search_attributes"`
+	ParentWorkflowID     *string                `db:"parent_workflow_id"`
+	ParentRunID          *string                `db:"parent_run_id"`
+	RootWorkflowID       string                 `db:"root_workflow_id"`
+	RootRunID            string                 `db:"root_run_id"`
+
+	// Version must be at the end because the version column has to be the last column in the insert statement.
+	// Otherwise we may do partial updates as the version changes halfway through.
+	// This is because MySQL doesn't support row versioning in a way that prevents out-of-order updates.
+	Version int64 `db:"_version"`
+}
+
+func newExecLocalVisibilityRow(row *sqlplugin.VisibilityRow) *execLocalVisibilityRow {
+
+	return &execLocalVisibilityRow{
+		NamespaceID:          row.NamespaceID,
+		RunID:                row.RunID,
+		WorkflowTypeName:     row.WorkflowTypeName,
+		WorkflowID:           row.WorkflowID,
+		StartTime:            go_ora.TimeStamp(row.StartTime),
+		ExecutionTime:        go_ora.TimeStamp(row.ExecutionTime),
+		Status:               row.Status,
+		CloseTime:            session.GetOraTimeStampPtr(row.CloseTime),
+		HistoryLength:        row.HistoryLength,
+		HistorySizeBytes:     row.HistorySizeBytes,
+		ExecutionDuration:    row.ExecutionDuration,
+		StateTransitionCount: row.StateTransitionCount,
+		Memo:                 row.Memo,
+		Encoding:             row.Encoding,
+		TaskQueue:            row.TaskQueue,
+		SearchAttributes:     nil,
+		ParentWorkflowID:     row.ParentWorkflowID,
+		ParentRunID:          row.ParentRunID,
+		RootWorkflowID:       row.RootWorkflowID,
+		RootRunID:            row.RootRunID,
+		Version:              row.Version,
+	}
+}
+
+type queryLocalVisibilityRow struct {
+	NamespaceID          string
+	RunID                string
+	WorkflowTypeName     string
+	WorkflowID           string
+	StartTime            go_ora.TimeStamp
+	ExecutionTime        go_ora.TimeStamp
+	Status               int32
+	CloseTime            *go_ora.TimeStamp
+	HistoryLength        *int64
+	HistorySizeBytes     *int64
+	ExecutionDuration    *time.Duration
+	StateTransitionCount *int64
+	Memo                 []byte
+	Encoding             string
+	TaskQueue            string
+	SearchAttributes     *sqlplugin.VisibilitySearchAttributes
+	ParentWorkflowID     *string
+	ParentRunID          *string
+	RootWorkflowID       string
+	RootRunID            string
+
+	// Version must be at the end because the version column has to be the last column in the insert statement.
+	// Otherwise we may do partial updates as the version changes halfway through.
+	// This is because MySQL doesn't support row versioning in a way that prevents out-of-order updates.
+	Version int64 `db:"_version"`
+}
+
+func (row queryLocalVisibilityRow) toExternalType() sqlplugin.VisibilityRow {
+	return sqlplugin.VisibilityRow{
+		NamespaceID:          row.NamespaceID,
+		RunID:                row.RunID,
+		WorkflowTypeName:     row.WorkflowTypeName,
+		WorkflowID:           row.WorkflowID,
+		StartTime:            time.Time(row.StartTime),
+		ExecutionTime:        time.Time(row.ExecutionTime),
+		Status:               row.Status,
+		CloseTime:            session.GetTimeStampPtrFromOra(row.CloseTime),
+		HistoryLength:        row.HistoryLength,
+		HistorySizeBytes:     row.HistorySizeBytes,
+		ExecutionDuration:    row.ExecutionDuration,
+		StateTransitionCount: row.StateTransitionCount,
+		Memo:                 row.Memo,
+		Encoding:             row.Encoding,
+		TaskQueue:            row.TaskQueue,
+		SearchAttributes:     row.SearchAttributes,
+		ParentWorkflowID:     row.ParentWorkflowID,
+		ParentRunID:          row.ParentRunID,
+		RootWorkflowID:       row.RootWorkflowID,
+		RootRunID:            row.RootRunID,
+		Version:              row.Version,
+	}
+}
+
+// VisibilitySelectFilter contains the column names within executions_visibility table that
+// can be used to filter results through a WHERE clause
+type localVisibilitySelectFilter struct {
+	NamespaceID      string
+	RunID            *string
+	WorkflowID       *string
+	WorkflowTypeName *string
+	Status           int32
+	MinTime          *go_ora.TimeStamp
+	MaxTime          *go_ora.TimeStamp
+	PageSize         *int
+
+	Query     string
+	QueryArgs []interface{}
+	GroupBy   []string
+}
+
+func newLocalVisibilitySelectFilter(filter sqlplugin.VisibilitySelectFilter) *localVisibilitySelectFilter {
+	return &localVisibilitySelectFilter{
+		NamespaceID:      filter.NamespaceID,
+		RunID:            filter.RunID,
+		WorkflowID:       filter.WorkflowID,
+		WorkflowTypeName: filter.WorkflowTypeName,
+		Status:           filter.Status,
+		MinTime:          session.GetOraTimeStampPtr(filter.MinTime),
+		MaxTime:          session.GetOraTimeStampPtr(filter.MaxTime),
+		PageSize:         filter.PageSize,
+		Query:            filter.Query,
+		QueryArgs:        filter.QueryArgs,
+		GroupBy:          filter.GroupBy,
+	}
+}
+
 // InsertIntoVisibility inserts a row into visibility table. If an row already exist,
 // its left as such and no update will be made
 func (mdb *db) InsertIntoVisibility(
 	ctx context.Context,
 	row *sqlplugin.VisibilityRow,
 ) (result sql.Result, retError error) {
-	finalRow := mdb.prepareRowForDB(row)
 	defer func() {
 		retError = mdb.handle.ConvertError(retError)
 	}()
@@ -164,11 +308,11 @@ func (mdb *db) InsertIntoVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	result, err = tx.ExecContext(ctx, templateInsertWorkflowExecution, finalRow)
+	result, err = tx.NamedExecContext(ctx, templateInsertWorkflowExecution, newExecLocalVisibilityRow(row))
 	if err != nil {
 		return nil, fmt.Errorf("unable to insert workflow execution: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, templateInsertCustomSearchAttributes, finalRow)
+	_, err = tx.NamedExecContext(ctx, templateInsertCustomSearchAttributes, newExecLocalVisibilityRow(row))
 	if err != nil {
 		return nil, fmt.Errorf("unable to insert custom search attributes: %w", err)
 	}
@@ -187,7 +331,7 @@ func (mdb *db) ReplaceIntoVisibility(
 	defer func() {
 		retError = mdb.handle.ConvertError(retError)
 	}()
-	finalRow := mdb.prepareRowForDB(row)
+
 	db, err := mdb.handle.DB()
 	if err != nil {
 		return nil, err
@@ -204,11 +348,11 @@ func (mdb *db) ReplaceIntoVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	result, err = tx.ExecContext(ctx, templateUpsertWorkflowExecution, finalRow)
+	result, err = tx.NamedExecContext(ctx, templateUpsertWorkflowExecution, newExecLocalVisibilityRow(row))
 	if err != nil {
 		return nil, fmt.Errorf("unable to upsert workflow execution: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, templateUpsertCustomSearchAttributes, finalRow)
+	_, err = tx.NamedExecContext(ctx, templateUpsertCustomSearchAttributes, newExecLocalVisibilityRow(row))
 	if err != nil {
 		return nil, fmt.Errorf("unable to upsert custom search attributes: %w", err)
 	}
@@ -244,11 +388,17 @@ func (mdb *db) DeleteFromVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	_, err = mdb.ExecContext(ctx, templateDeleteCustomSearchAttributes, filter)
+	_, err = mdb.ExecContext(ctx, templateDeleteCustomSearchAttributes, map[string]interface{}{
+		"namespace_id": filter.NamespaceID,
+		"run_id":       filter.RunID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to delete custom search attributes: %w", err)
 	}
-	result, err = mdb.ExecContext(ctx, templateDeleteWorkflowExecution_v8, filter)
+	result, err = mdb.ExecContext(ctx, templateDeleteWorkflowExecution_v8, map[string]interface{}{
+		"namespace_id": filter.NamespaceID,
+		"run_id":       filter.RunID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to delete workflow execution: %w", err)
 	}
@@ -266,7 +416,9 @@ func (mdb *db) SelectFromVisibility(
 ) ([]sqlplugin.VisibilityRow, error) {
 	if len(filter.Query) == 0 {
 		// backward compatibility for existing tests
-		err := sqlplugin.GenerateSelectQuery(&filter, mdb.converter.ToOracleTimestamp)
+		err := sqlplugin.GenerateSelectQuery(&filter, func(t time.Time) time.Time {
+			return time.Now()
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -275,18 +427,23 @@ func (mdb *db) SelectFromVisibility(
 		filter.Query = strings.Replace(filter.Query, "LIMIT ?", "FETCH FIRST ? ROWS ONLY", 1)
 	}
 
-	var rows []sqlplugin.VisibilityRow
+	var rows []queryLocalVisibilityRow
 	err := mdb.SelectContext(ctx, &rows, filter.Query, filter.QueryArgs...)
 	if err != nil {
 		return nil, err
 	}
+
+	res := make([]sqlplugin.VisibilityRow, len(rows))
+
 	for i := range rows {
-		err = mdb.processRowFromDB(&rows[i])
-		if err != nil {
+		externalRow := rows[i].toExternalType()
+
+		if err := mdb.processRowFromDB(&externalRow); err != nil {
 			return nil, err
 		}
+		res[i] = externalRow
 	}
-	return rows, nil
+	return res, nil
 }
 
 // GetFromVisibility reads one row from visibility table
@@ -294,7 +451,7 @@ func (mdb *db) GetFromVisibility(
 	ctx context.Context,
 	filter sqlplugin.VisibilityGetFilter,
 ) (*sqlplugin.VisibilityRow, error) {
-	var row sqlplugin.VisibilityRow
+	var row queryLocalVisibilityRow
 	stmt, err := mdb.PrepareNamedContext(ctx, templateGetWorkflowExecution_v8)
 	if err != nil {
 		return nil, err
@@ -305,11 +462,12 @@ func (mdb *db) GetFromVisibility(
 	if err != nil {
 		return nil, err
 	}
-	err = mdb.processRowFromDB(&row)
-	if err != nil {
+
+	externalRow := row.toExternalType()
+	if err := mdb.processRowFromDB(&externalRow); err != nil {
 		return nil, err
 	}
-	return &row, nil
+	return &externalRow, nil
 }
 
 // CountFromVisibility counts rows based on the filter
@@ -345,31 +503,12 @@ func (mdb *db) CountGroupByFromVisibility(
 	return sqlplugin.ParseCountGroupByRows(rows, filter.GroupBy)
 }
 
-// prepareRowForDB converts time fields to the database format
-func (mdb *db) prepareRowForDB(row *sqlplugin.VisibilityRow) *sqlplugin.VisibilityRow {
-	if row == nil {
-		return nil
-	}
-	finalRow := *row
-	finalRow.StartTime = mdb.converter.ToOracleTimestamp(finalRow.StartTime)
-	finalRow.ExecutionTime = mdb.converter.ToOracleTimestamp(finalRow.ExecutionTime)
-	if finalRow.CloseTime != nil {
-		*finalRow.CloseTime = mdb.converter.ToOracleTimestamp(*finalRow.CloseTime)
-	}
-	return &finalRow
-}
-
 // processRowFromDB converts row data from the database format to application format
 func (mdb *db) processRowFromDB(row *sqlplugin.VisibilityRow) error {
 	if row == nil {
 		return nil
 	}
-	row.StartTime = mdb.converter.FromOracleTimestamp(row.StartTime)
-	row.ExecutionTime = mdb.converter.FromOracleTimestamp(row.ExecutionTime)
-	if row.CloseTime != nil {
-		closeTime := mdb.converter.FromOracleTimestamp(*row.CloseTime)
-		row.CloseTime = &closeTime
-	}
+
 	if row.SearchAttributes != nil {
 		for saName, saValue := range *row.SearchAttributes {
 			switch typedSaValue := saValue.(type) {

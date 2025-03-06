@@ -339,18 +339,13 @@ type execCurrentExecutionsRow struct {
 }
 
 func newExecCurrentExecutionsRow(row *sqlplugin.CurrentExecutionsRow) execCurrentExecutionsRow {
-	var startTime *go_ora.TimeStamp
-	if row.StartTime != nil {
-		startTimeTmp := go_ora.TimeStamp(*row.StartTime)
-		startTime = &startTimeTmp
-	}
 	return execCurrentExecutionsRow{
 		ShardID:          row.ShardID,
 		NamespaceID:      row.NamespaceID,
 		WorkflowID:       row.WorkflowID,
 		RunID:            row.RunID,
 		CreateRequestID:  row.CreateRequestID,
-		StartTime:        startTime,
+		StartTime:        session.GetOraTimeStampPtr(row.StartTime),
 		LastWriteVersion: row.LastWriteVersion,
 		State:            row.State,
 		Status:           row.Status,
@@ -374,18 +369,13 @@ type queryCurrentExecutionsRow struct {
 }
 
 func (r queryCurrentExecutionsRow) toExternalType() sqlplugin.CurrentExecutionsRow {
-	var startTime *time.Time
-	if r.StartTime != nil {
-		startTimeTmp := time.Time(*r.StartTime)
-		startTime = &startTimeTmp
-	}
 	return sqlplugin.CurrentExecutionsRow{
 		ShardID:          r.ShardID,
 		NamespaceID:      r.NamespaceID,
 		WorkflowID:       r.WorkflowID,
 		RunID:            r.RunID,
 		CreateRequestID:  r.CreateRequestID,
-		StartTime:        startTime,
+		StartTime:        session.GetTimeStampPtrFromOra(r.StartTime),
 		LastWriteVersion: r.LastWriteVersion,
 		State:            r.State,
 		Status:           r.Status,

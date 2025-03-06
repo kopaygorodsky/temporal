@@ -690,32 +690,189 @@ workflow_id = :workflow_id AND
 run_id = :run_id`
 )
 
-// ReplaceIntoSignalsRequestedSets inserts one or more rows into signals_requested_sets table
+// ReplaceIntoSignalsRequestedSets replaces one or more rows in signals_requested_sets table
+//
+// Note on implementation: We previously used Oracle's MERGE statement, but switched
+// to this implementation with separate batch operations for better performance.
+// This table has a different structure than the other info maps tables, so it has
+// a specific implementation rather than using the generic function.
+// Can't use here our generics function as two more fields are not compatible. Decided to copy/paste for now.
 func (mdb *db) ReplaceIntoSignalsRequestedSets(
 	ctx context.Context,
 	rows []sqlplugin.SignalsRequestedSetsRow,
 ) (sql.Result, error) {
-	type localSignalsRequestedSetsRow struct {
-		ShardID     int32  `db:"shard_id"`
-		NamespaceID []byte `db:"namespace_id"`
-		WorkflowID  string `db:"workflow_id"`
-		RunID       []byte `db:"run_id"`
-		SignalID    string `db:"signal_id"`
+	if len(rows) == 0 {
+		return nil, nil
 	}
-	insertions := make([]localSignalsRequestedSetsRow, len(rows))
+
+	// Get common values from the first row
+	firstRow := rows[0]
+	shardID := firstRow.ShardID
+	namespaceID := firstRow.NamespaceID.Downcast()
+	workflowID := firstRow.WorkflowID
+	runID := firstRow.RunID.Downcast()
+
+	// Collect all signal IDs for the IN clause
+	signalIDs := make([]string, len(rows))
 	for i, row := range rows {
-		insertions[i] = localSignalsRequestedSetsRow{
-			ShardID:     row.ShardID,
-			NamespaceID: row.NamespaceID.Downcast(),
-			WorkflowID:  row.WorkflowID,
-			RunID:       row.RunID.Downcast(),
-			SignalID:    row.SignalID,
+		signalIDs[i] = row.SignalID
+	}
+
+	// Create a map for quick lookup of rows by signal ID
+	rowsBySignalID := make(map[string]sqlplugin.SignalsRequestedSetsRow, len(rows))
+	for _, row := range rows {
+		rowsBySignalID[row.SignalID] = row
+	}
+
+	// Fetch existing rows to determine what needs to be inserted vs updated
+	inClause := make([]string, len(signalIDs))
+	params := make(map[string]interface{})
+	params["shard_id"] = shardID
+	params["namespace_id"] = namespaceID
+	params["workflow_id"] = workflowID
+	params["run_id"] = runID
+
+	for i, id := range signalIDs {
+		paramName := fmt.Sprintf("id_%d", i)
+		inClause[i] = ":" + paramName
+		params[paramName] = id
+	}
+
+	query := fmt.Sprintf(`
+        SELECT signal_id 
+        FROM signals_requested_sets
+        WHERE shard_id = :shard_id 
+        AND namespace_id = :namespace_id 
+        AND workflow_id = :workflow_id 
+        AND run_id = :run_id 
+        AND signal_id IN (%s)
+    `, strings.Join(inClause, ", "))
+
+	var existingIDs []string
+	if err := mdb.NamedSelectContext(ctx, &existingIDs, query, params); err != nil {
+		return nil, err
+	}
+
+	// Create sets for existing and new IDs
+	existingIDSet := make(map[string]struct{}, len(existingIDs))
+	for _, id := range existingIDs {
+		existingIDSet[id] = struct{}{}
+	}
+
+	// Separate rows for updates and inserts
+	var updates []sqlplugin.SignalsRequestedSetsRow
+	var inserts []sqlplugin.SignalsRequestedSetsRow
+
+	for _, row := range rows {
+		if _, exists := existingIDSet[row.SignalID]; exists {
+			updates = append(updates, row)
+		} else {
+			inserts = append(inserts, row)
 		}
 	}
-	return mdb.NamedExecContext(ctx,
-		createSignalsRequestedSetQry,
-		insertions,
-	)
+
+	// Begin transaction
+	tx, err := mdb.BeginWithFullTxx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Process updates if needed
+	if len(updates) > 0 {
+		updateQuery := `
+            UPDATE signals_requested_sets
+            SET shard_id = :shard_id, 
+                namespace_id = :namespace_id, 
+                workflow_id = :workflow_id, 
+                run_id = :run_id
+            WHERE shard_id = :shard_id 
+            AND namespace_id = :namespace_id 
+            AND workflow_id = :workflow_id 
+            AND run_id = :run_id 
+            AND signal_id = :signal_id
+        `
+
+		// For batch operations with go-ora, create separate slices for each column
+		shardIDs := make([]int32, len(updates))
+		namespaceIDs := make([][]byte, len(updates))
+		workflowIDs := make([]string, len(updates))
+		runIDs := make([][]byte, len(updates))
+		signalIDs := make([]string, len(updates))
+
+		for i, row := range updates {
+			shardIDs[i] = row.ShardID
+			namespaceIDs[i] = row.NamespaceID.Downcast()
+			workflowIDs[i] = row.WorkflowID
+			runIDs[i] = row.RunID.Downcast()
+			signalIDs[i] = row.SignalID
+		}
+
+		// Create batch parameter map
+		batchUpdateParams := map[string]interface{}{
+			"shard_id":     shardIDs,
+			"namespace_id": namespaceIDs,
+			"workflow_id":  workflowIDs,
+			"run_id":       runIDs,
+			"signal_id":    signalIDs,
+		}
+
+		if _, err = tx.NamedExecContext(ctx, updateQuery, batchUpdateParams); err != nil {
+			return nil, err
+		}
+	}
+
+	// Process inserts if needed
+	if len(inserts) > 0 {
+		insertQuery := `
+            INSERT INTO signals_requested_sets
+            (shard_id, namespace_id, workflow_id, run_id, signal_id)
+            VALUES (:shard_id, :namespace_id, :workflow_id, :run_id, :signal_id)
+        `
+
+		// For batch operations with go-ora, create separate slices for each column
+		shardIDs := make([]int32, len(inserts))
+		namespaceIDs := make([][]byte, len(inserts))
+		workflowIDs := make([]string, len(inserts))
+		runIDs := make([][]byte, len(inserts))
+		signalIDs := make([]string, len(inserts))
+
+		for i, row := range inserts {
+			shardIDs[i] = row.ShardID
+			namespaceIDs[i] = row.NamespaceID.Downcast()
+			workflowIDs[i] = row.WorkflowID
+			runIDs[i] = row.RunID.Downcast()
+			signalIDs[i] = row.SignalID
+		}
+
+		// Create batch parameter map
+		batchInsertParams := map[string]interface{}{
+			"shard_id":     shardIDs,
+			"namespace_id": namespaceIDs,
+			"workflow_id":  workflowIDs,
+			"run_id":       runIDs,
+			"signal_id":    signalIDs,
+		}
+
+		if _, err = tx.NamedExecContext(ctx, insertQuery, batchInsertParams); err != nil {
+			return nil, err
+		}
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	// Return a dummy result
+	return &queryResult{
+		lastInsertedID: int64(len(inserts)),
+		rowsAffected:   int64(len(inserts) + len(updates)),
+	}, nil
 }
 
 // SelectAllFromSignalsRequestedSets reads all rows from signals_requested_sets table

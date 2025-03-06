@@ -24,3 +24,23 @@ func (t TimeStamp) AsParam() go_ora.TimeStamp {
 func NewTimeStamp(origTime time.Time) TimeStamp {
 	return TimeStamp{go_ora.TimeStamp(origTime)}
 }
+
+func GetOraTimeStampPtr(origTime *time.Time) *go_ora.TimeStamp {
+	if origTime == nil {
+		return nil
+	}
+
+	v := go_ora.TimeStamp(*origTime)
+
+	return &v
+}
+
+func GetTimeStampPtrFromOra(oraTime *go_ora.TimeStamp) *time.Time {
+	if oraTime == nil {
+		return nil
+	}
+
+	v := time.Time(*oraTime)
+
+	return &v
+}
