@@ -122,42 +122,30 @@ var (
 	activityInfoTableName = "activity_info_maps"
 	activityInfoKey       = "schedule_id"
 
-	deleteActivityInfoMapQry      = makeDeleteMapQry(activityInfoTableName)
+	deleteActivityInfoMapQry = makeDeleteMapQry(activityInfoTableName)
+	//@todo can't be used with multiple inserts in Oracle, so had to switch to another approach
 	setKeyInActivityInfoMapQry    = makeSetKeyInMapQry(activityInfoTableName, activityInfoColumns, activityInfoKey)
 	deleteKeyInActivityInfoMapQry = makeDeleteKeyInMapQry(activityInfoTableName, activityInfoKey)
 	getActivityInfoMapQry         = makeGetMapQryTemplate(activityInfoTableName, activityInfoColumns, activityInfoKey)
 )
 
-// ReplaceIntoActivityInfoMaps replaces one or more rows in activity_info_maps table
 func (mdb *db) ReplaceIntoActivityInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.ActivityInfoMapsRow,
 ) (sql.Result, error) {
-	type localActivityInfoMapsRow struct {
-		ShardID      int32  `db:"shard_id"`
-		NamespaceID  []byte `db:"namespace_id"`
-		WorkflowID   string `db:"workflow_id"`
-		RunID        []byte `db:"run_id"`
-		ScheduleID   int64  `db:"schedule_id"`
-		Data         []byte `db:"data"`
-		DataEncoding string `db:"data_encoding"`
-	}
-	insertions := make([]localActivityInfoMapsRow, len(rows))
-	for i, row := range rows {
-		insertions[i] = localActivityInfoMapsRow{
-			ShardID:      row.ShardID,
-			NamespaceID:  row.NamespaceID.Downcast(),
-			WorkflowID:   row.WorkflowID,
-			RunID:        row.RunID.Downcast(),
-			ScheduleID:   row.ScheduleID,
-			Data:         row.Data,
-			DataEncoding: row.DataEncoding,
-		}
-	}
-
-	return mdb.NamedExecContext(ctx,
-		setKeyInActivityInfoMapQry,
-		insertions,
+	return replaceIntoInfoMaps(
+		ctx,
+		mdb,
+		rows,
+		"activity_info_maps",
+		"schedule_id",
+		func(row sqlplugin.ActivityInfoMapsRow) int32 { return row.ShardID },
+		func(row sqlplugin.ActivityInfoMapsRow) []byte { return row.NamespaceID.Downcast() },
+		func(row sqlplugin.ActivityInfoMapsRow) string { return row.WorkflowID },
+		func(row sqlplugin.ActivityInfoMapsRow) []byte { return row.RunID.Downcast() },
+		func(row sqlplugin.ActivityInfoMapsRow) interface{} { return row.ScheduleID },
+		func(row sqlplugin.ActivityInfoMapsRow) []byte { return row.Data },
+		func(row sqlplugin.ActivityInfoMapsRow) string { return row.DataEncoding },
 	)
 }
 
@@ -251,32 +239,19 @@ func (mdb *db) ReplaceIntoTimerInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.TimerInfoMapsRow,
 ) (sql.Result, error) {
-	type localTimerInfoMapsRow struct {
-		ShardID      int32  `db:"shard_id"`
-		NamespaceID  []byte `db:"namespace_id"`
-		WorkflowID   string `db:"workflow_id"`
-		RunID        []byte `db:"run_id"`
-		TimerID      string `db:"timer_id"`
-		Data         []byte `db:"data"`
-		DataEncoding string `db:"data_encoding"`
-	}
-
-	insertions := make([]localTimerInfoMapsRow, len(rows))
-
-	for i, row := range rows {
-		insertions[i] = localTimerInfoMapsRow{
-			ShardID:      row.ShardID,
-			NamespaceID:  row.NamespaceID.Downcast(),
-			WorkflowID:   row.WorkflowID,
-			RunID:        row.RunID.Downcast(),
-			TimerID:      row.TimerID,
-			Data:         row.Data,
-			DataEncoding: row.DataEncoding,
-		}
-	}
-	return mdb.NamedExecContext(ctx,
-		setKeyInTimerInfoMapSQLQuery,
-		insertions,
+	return replaceIntoInfoMaps(
+		ctx,
+		mdb,
+		rows,
+		"timer_info_maps",
+		"timer_id",
+		func(row sqlplugin.TimerInfoMapsRow) int32 { return row.ShardID },
+		func(row sqlplugin.TimerInfoMapsRow) []byte { return row.NamespaceID.Downcast() },
+		func(row sqlplugin.TimerInfoMapsRow) string { return row.WorkflowID },
+		func(row sqlplugin.TimerInfoMapsRow) []byte { return row.RunID.Downcast() },
+		func(row sqlplugin.TimerInfoMapsRow) interface{} { return row.TimerID },
+		func(row sqlplugin.TimerInfoMapsRow) []byte { return row.Data },
+		func(row sqlplugin.TimerInfoMapsRow) string { return row.DataEncoding },
 	)
 }
 
@@ -365,37 +340,23 @@ var (
 	getChildExecutionInfoMapQry         = makeGetMapQryTemplate(childExecutionInfoTableName, childExecutionInfoColumns, childExecutionInfoKey)
 )
 
-// ReplaceIntoChildExecutionInfoMaps replaces one or more rows in child_execution_info_maps table
 func (mdb *db) ReplaceIntoChildExecutionInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.ChildExecutionInfoMapsRow,
 ) (sql.Result, error) {
-	type localChildExecutionInfoMapsRow struct {
-		ShardID      int32  `db:"shard_id"`
-		NamespaceID  []byte `db:"namespace_id"`
-		WorkflowID   string `db:"workflow_id"`
-		RunID        []byte `db:"run_id"`
-		InitiatedID  int64  `db:"initiated_id"`
-		Data         []byte `db:"data"`
-		DataEncoding string `db:"data_encoding"`
-	}
-
-	insertions := make([]localChildExecutionInfoMapsRow, len(rows))
-
-	for i, row := range rows {
-		insertions[i] = localChildExecutionInfoMapsRow{
-			ShardID:      row.ShardID,
-			NamespaceID:  row.NamespaceID.Downcast(),
-			WorkflowID:   row.WorkflowID,
-			RunID:        row.RunID.Downcast(),
-			InitiatedID:  row.InitiatedID,
-			Data:         row.Data,
-			DataEncoding: row.DataEncoding,
-		}
-	}
-	return mdb.NamedExecContext(ctx,
-		setKeyInChildExecutionInfoMapQry,
-		insertions,
+	return replaceIntoInfoMaps(
+		ctx,
+		mdb,
+		rows,
+		"child_execution_info_maps",
+		"initiated_id",
+		func(row sqlplugin.ChildExecutionInfoMapsRow) int32 { return row.ShardID },
+		func(row sqlplugin.ChildExecutionInfoMapsRow) []byte { return row.NamespaceID.Downcast() },
+		func(row sqlplugin.ChildExecutionInfoMapsRow) string { return row.WorkflowID },
+		func(row sqlplugin.ChildExecutionInfoMapsRow) []byte { return row.RunID.Downcast() },
+		func(row sqlplugin.ChildExecutionInfoMapsRow) interface{} { return row.InitiatedID },
+		func(row sqlplugin.ChildExecutionInfoMapsRow) []byte { return row.Data },
+		func(row sqlplugin.ChildExecutionInfoMapsRow) string { return row.DataEncoding },
 	)
 }
 
@@ -489,32 +450,19 @@ func (mdb *db) ReplaceIntoRequestCancelInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.RequestCancelInfoMapsRow,
 ) (sql.Result, error) {
-	type localRequestCancelInfoMapsRow struct {
-		ShardID      int32  `db:"shard_id"`
-		NamespaceID  []byte `db:"namespace_id"`
-		WorkflowID   string `db:"workflow_id"`
-		RunID        []byte `db:"run_id"`
-		InitiatedID  int64  `db:"initiated_id"`
-		Data         []byte `db:"data"`
-		DataEncoding string `db:"data_encoding"`
-	}
-
-	insertions := make([]localRequestCancelInfoMapsRow, len(rows))
-	for i, row := range rows {
-		insertions[i] = localRequestCancelInfoMapsRow{
-			ShardID:      row.ShardID,
-			NamespaceID:  row.NamespaceID.Downcast(),
-			WorkflowID:   row.WorkflowID,
-			RunID:        row.RunID.Downcast(),
-			InitiatedID:  row.InitiatedID,
-			Data:         row.Data,
-			DataEncoding: row.DataEncoding,
-		}
-	}
-
-	return mdb.NamedExecContext(ctx,
-		setKeyInRequestCancelInfoMapQry,
-		insertions,
+	return replaceIntoInfoMaps(
+		ctx,
+		mdb,
+		rows,
+		"request_cancel_info_maps",
+		"initiated_id",
+		func(row sqlplugin.RequestCancelInfoMapsRow) int32 { return row.ShardID },
+		func(row sqlplugin.RequestCancelInfoMapsRow) []byte { return row.NamespaceID.Downcast() },
+		func(row sqlplugin.RequestCancelInfoMapsRow) string { return row.WorkflowID },
+		func(row sqlplugin.RequestCancelInfoMapsRow) []byte { return row.RunID.Downcast() },
+		func(row sqlplugin.RequestCancelInfoMapsRow) interface{} { return row.InitiatedID },
+		func(row sqlplugin.RequestCancelInfoMapsRow) []byte { return row.Data },
+		func(row sqlplugin.RequestCancelInfoMapsRow) string { return row.DataEncoding },
 	)
 }
 
@@ -608,32 +556,19 @@ func (mdb *db) ReplaceIntoSignalInfoMaps(
 	ctx context.Context,
 	rows []sqlplugin.SignalInfoMapsRow,
 ) (sql.Result, error) {
-	type localSignalInfoMapsRow struct {
-		ShardID      int32  `db:"shard_id"`
-		NamespaceID  []byte `db:"namespace_id"`
-		WorkflowID   string `db:"workflow_id"`
-		RunID        []byte `db:"run_id"`
-		InitiatedID  int64  `db:"initiated_id"`
-		Data         []byte `db:"data"`
-		DataEncoding string `db:"data_encoding"`
-	}
-
-	insertions := make([]localSignalInfoMapsRow, len(rows))
-	for i, row := range rows {
-		insertions[i] = localSignalInfoMapsRow{
-			ShardID:      row.ShardID,
-			NamespaceID:  row.NamespaceID.Downcast(),
-			WorkflowID:   row.WorkflowID,
-			RunID:        row.RunID.Downcast(),
-			InitiatedID:  row.InitiatedID,
-			Data:         row.Data,
-			DataEncoding: row.DataEncoding,
-		}
-	}
-
-	return mdb.NamedExecContext(ctx,
-		setKeyInSignalInfoMapQry,
-		insertions,
+	return replaceIntoInfoMaps(
+		ctx,
+		mdb,
+		rows,
+		"signal_info_maps",
+		"initiated_id",
+		func(row sqlplugin.SignalInfoMapsRow) int32 { return row.ShardID },
+		func(row sqlplugin.SignalInfoMapsRow) []byte { return row.NamespaceID.Downcast() },
+		func(row sqlplugin.SignalInfoMapsRow) string { return row.WorkflowID },
+		func(row sqlplugin.SignalInfoMapsRow) []byte { return row.RunID.Downcast() },
+		func(row sqlplugin.SignalInfoMapsRow) interface{} { return row.InitiatedID },
+		func(row sqlplugin.SignalInfoMapsRow) []byte { return row.Data },
+		func(row sqlplugin.SignalInfoMapsRow) string { return row.DataEncoding },
 	)
 }
 
@@ -852,4 +787,258 @@ func (mdb *db) DeleteAllFromSignalsRequestedSets(
 			"run_id":       filter.RunID.Downcast(),
 		},
 	)
+}
+
+// replaceIntoInfoMaps is a generic function to replace rows in any info maps table
+// @todo
+// Note on implementation: We previously used Oracle's MERGE statement, but switched
+// to this implementation with separate batch UPDATE/INSERT operations for better
+// performance. The reasons for this change include:
+//
+// 1. Performance: Oracle's MERGE statement operates row-by-row, which causes
+//    multiple round trips when processing batches. This implementation reduces
+//    database round trips by processing INSERTs and UPDATEs in two bulk operations.
+//
+// 2. Execution plan optimization: Oracle can better optimize separate UPDATE and
+//    INSERT operations than it can for MERGE statements with complex conditions.
+//
+// 3. Deadlock reduction: MERGE statements can be more prone to deadlocks in
+//    high-concurrency scenarios due to their locking behavior.
+//
+// 4. Compatibility with go-ora's batch operations: This approach leverages the
+//    batch operation capabilities of the go-ora driver, which aren't available
+//    with the MERGE statement in the same way.
+//
+// The trade-off is slightly more complex code, but the performance benefits are
+// substantial, especially for larger batch sizes (10+ rows).
+func replaceIntoInfoMaps[T any](
+	ctx context.Context,
+	db *db,
+	rows []T,
+	tableName string,
+	keyColName string,
+	getShardID func(T) int32,
+	getNamespaceID func(T) []byte,
+	getWorkflowID func(T) string,
+	getRunID func(T) []byte,
+	getMapKey func(T) interface{},
+	getData func(T) []byte,
+	getDataEncoding func(T) string,
+) (sql.Result, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	// Get common values from the first row
+	firstRow := rows[0]
+	shardID := getShardID(firstRow)
+	namespaceID := getNamespaceID(firstRow)
+	workflowID := getWorkflowID(firstRow)
+	runID := getRunID(firstRow)
+
+	// Collect all keys for the IN clause
+	keys := make([]interface{}, len(rows))
+	for i, row := range rows {
+		keys[i] = getMapKey(row)
+	}
+
+	// Create a map for quick lookup of rows by key
+	rowsByKey := make(map[interface{}]T, len(rows))
+	for _, row := range rows {
+		rowsByKey[getMapKey(row)] = row
+	}
+
+	// Determine key type
+	isStringKey := false
+	if len(keys) > 0 {
+		_, isStringKey = keys[0].(string)
+	}
+
+	// Fetch existing rows to determine what needs to be inserted vs updated
+	inClause := make([]string, len(keys))
+	params := make(map[string]interface{})
+	params["shard_id"] = shardID
+	params["namespace_id"] = namespaceID
+	params["workflow_id"] = workflowID
+	params["run_id"] = runID
+
+	for i, key := range keys {
+		paramName := fmt.Sprintf("key_%d", i)
+		inClause[i] = ":" + paramName
+		params[paramName] = key
+	}
+
+	query := fmt.Sprintf(`
+        SELECT %s 
+        FROM %s
+        WHERE shard_id = :shard_id 
+        AND namespace_id = :namespace_id 
+        AND workflow_id = :workflow_id 
+        AND run_id = :run_id 
+        AND %s IN (%s)
+    `, keyColName, tableName, keyColName, strings.Join(inClause, ", "))
+
+	// Query for existing keys
+	var existingKeys []interface{}
+	if isStringKey {
+		var stringKeys []string
+		if err := db.NamedSelectContext(ctx, &stringKeys, query, params); err != nil {
+			return nil, err
+		}
+		existingKeys = make([]interface{}, len(stringKeys))
+		for i, key := range stringKeys {
+			existingKeys[i] = key
+		}
+	} else {
+		var int64Keys []int64
+		if err := db.NamedSelectContext(ctx, &int64Keys, query, params); err != nil {
+			return nil, err
+		}
+		existingKeys = make([]interface{}, len(int64Keys))
+		for i, key := range int64Keys {
+			existingKeys[i] = key
+		}
+	}
+
+	// Create sets for existing and new keys
+	existingKeySet := make(map[interface{}]struct{}, len(existingKeys))
+	for _, key := range existingKeys {
+		existingKeySet[key] = struct{}{}
+	}
+
+	// Prepare rows for update and insert
+	var updates []T
+	var inserts []T
+
+	for _, row := range rows {
+		if _, exists := existingKeySet[getMapKey(row)]; exists {
+			updates = append(updates, row)
+		} else {
+			inserts = append(inserts, row)
+		}
+	}
+
+	// Begin transaction
+	tx, err := db.BeginWithFullTxx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Process updates if needed
+	if len(updates) > 0 {
+		updateQuery := fmt.Sprintf(`
+            UPDATE %s
+            SET data = :data, data_encoding = :data_encoding
+            WHERE shard_id = :shard_id 
+            AND namespace_id = :namespace_id 
+            AND workflow_id = :workflow_id 
+            AND run_id = :run_id 
+            AND %s = :%s
+        `, tableName, keyColName, keyColName)
+
+		// For batch operations with go-ora, create separate slices for each column
+		shardIDs := make([]int32, len(updates))
+		namespaceIDs := make([][]byte, len(updates))
+		workflowIDs := make([]string, len(updates))
+		runIDs := make([][]byte, len(updates))
+		mapKeys := make([]interface{}, len(updates))
+		datas := make([][]byte, len(updates))
+		dataEncodings := make([]string, len(updates))
+
+		for i, row := range updates {
+			shardIDs[i] = getShardID(row)
+			namespaceIDs[i] = getNamespaceID(row)
+			workflowIDs[i] = getWorkflowID(row)
+			runIDs[i] = getRunID(row)
+			mapKeys[i] = getMapKey(row)
+			datas[i] = getData(row)
+			dataEncodings[i] = getDataEncoding(row)
+		}
+
+		// Create batch parameter map
+		batchUpdateParams := map[string]interface{}{
+			"shard_id":      shardIDs,
+			"namespace_id":  namespaceIDs,
+			"workflow_id":   workflowIDs,
+			"run_id":        runIDs,
+			keyColName:      mapKeys,
+			"data":          datas,
+			"data_encoding": dataEncodings,
+		}
+
+		if _, err = tx.NamedExecContext(ctx, updateQuery, batchUpdateParams); err != nil {
+			return nil, err
+		}
+	}
+
+	// Process inserts if needed
+	if len(inserts) > 0 {
+		insertQuery := fmt.Sprintf(`
+            INSERT INTO %s
+            (shard_id, namespace_id, workflow_id, run_id, %s, data, data_encoding)
+            VALUES (:shard_id, :namespace_id, :workflow_id, :run_id, :%s, :data, :data_encoding)
+        `, tableName, keyColName, keyColName)
+
+		// For batch operations with go-ora, create separate slices for each column
+		shardIDs := make([]int32, len(inserts))
+		namespaceIDs := make([][]byte, len(inserts))
+		workflowIDs := make([]string, len(inserts))
+		runIDs := make([][]byte, len(inserts))
+		mapKeys := make([]interface{}, len(inserts))
+		datas := make([][]byte, len(inserts))
+		dataEncodings := make([]string, len(inserts))
+
+		for i, row := range inserts {
+			shardIDs[i] = getShardID(row)
+			namespaceIDs[i] = getNamespaceID(row)
+			workflowIDs[i] = getWorkflowID(row)
+			runIDs[i] = getRunID(row)
+			mapKeys[i] = getMapKey(row)
+			datas[i] = getData(row)
+			dataEncodings[i] = getDataEncoding(row)
+		}
+
+		// Create batch parameter map
+		batchInsertParams := map[string]interface{}{
+			"shard_id":      shardIDs,
+			"namespace_id":  namespaceIDs,
+			"workflow_id":   workflowIDs,
+			"run_id":        runIDs,
+			keyColName:      mapKeys,
+			"data":          datas,
+			"data_encoding": dataEncodings,
+		}
+
+		if _, err = tx.NamedExecContext(ctx, insertQuery, batchInsertParams); err != nil {
+			return nil, err
+		}
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &queryResult{
+		lastInsertedID: int64(len(inserts)),
+		rowsAffected:   int64(len(updates) + len(inserts)),
+	}, nil
+}
+
+type queryResult struct {
+	lastInsertedID int64
+	rowsAffected   int64
+}
+
+func (rs *queryResult) LastInsertId() (int64, error) {
+	return rs.lastInsertedID, nil
+}
+
+func (rs *queryResult) RowsAffected() (int64, error) {
+	return rs.rowsAffected, nil
 }
