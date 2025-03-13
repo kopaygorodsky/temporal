@@ -3,6 +3,7 @@ package oracle
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -690,13 +691,7 @@ workflow_id = :workflow_id AND
 run_id = :run_id`
 )
 
-// ReplaceIntoSignalsRequestedSets replaces one or more rows in signals_requested_sets table
-//
-// Note on implementation: We previously used Oracle's MERGE statement, but switched
-// to this implementation with separate batch operations for better performance.
-// This table has a different structure than the other info maps tables, so it has
-// a specific implementation rather than using the generic function.
-// Can't use here our generics function as two more fields are not compatible. Decided to copy/paste for now.
+// ReplaceIntoSignalsRequestedSets inserts records while ignoring duplicate key violations
 func (mdb *db) ReplaceIntoSignalsRequestedSets(
 	ctx context.Context,
 	rows []sqlplugin.SignalsRequestedSetsRow,
@@ -705,161 +700,52 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 		return nil, nil
 	}
 
-	// Get common values from the first row
-	firstRow := rows[0]
-	shardID := firstRow.ShardID
-	namespaceID := firstRow.NamespaceID.Downcast()
-	workflowID := firstRow.WorkflowID
-	runID := firstRow.RunID.Downcast()
-
-	// Collect all signal IDs for the IN clause
-	signalIDs := make([]string, len(rows))
-	for i, row := range rows {
-		signalIDs[i] = row.SignalID
-	}
-
-	// Create a map for quick lookup of rows by signal ID
-	rowsBySignalID := make(map[string]sqlplugin.SignalsRequestedSetsRow, len(rows))
-	for _, row := range rows {
-		rowsBySignalID[row.SignalID] = row
-	}
-
-	// Fetch existing rows to determine what needs to be inserted vs updated
-	inClause := make([]string, len(signalIDs))
-	params := make(map[string]interface{})
-	params["shard_id"] = shardID
-	params["namespace_id"] = namespaceID
-	params["workflow_id"] = workflowID
-	params["run_id"] = runID
-
-	for i, id := range signalIDs {
-		paramName := fmt.Sprintf("id_%d", i)
-		inClause[i] = ":" + paramName
-		params[paramName] = id
-	}
-
-	query := fmt.Sprintf(`
-        SELECT signal_id 
-        FROM signals_requested_sets
-        WHERE shard_id = :shard_id 
-        AND namespace_id = :namespace_id 
-        AND workflow_id = :workflow_id 
-        AND run_id = :run_id 
-        AND signal_id IN (%s)
-    `, strings.Join(inClause, ", "))
-
-	var existingIDs []string
-	if err := mdb.NamedSelectContext(ctx, &existingIDs, query, params); err != nil {
-		return nil, err
-	}
-
-	// Create sets for existing and new IDs
-	existingIDSet := make(map[string]struct{}, len(existingIDs))
-	for _, id := range existingIDs {
-		existingIDSet[id] = struct{}{}
-	}
-
-	// Separate rows for updates and inserts
-	var updates []sqlplugin.SignalsRequestedSetsRow
-	var inserts []sqlplugin.SignalsRequestedSetsRow
-
-	for _, row := range rows {
-		if _, exists := existingIDSet[row.SignalID]; exists {
-			updates = append(updates, row)
-		} else {
-			inserts = append(inserts, row)
-		}
-	}
-
-	// Begin transaction
+	// Start transaction
 	tx, err := mdb.BeginWithFullTxx(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	// Ensure proper cleanup
+	var committed bool
 	defer func() {
-		if err != nil {
+		if !committed && tx != nil {
 			tx.Rollback()
 		}
 	}()
 
-	// Process updates if needed
-	if len(updates) > 0 {
-		updateQuery := `
-            UPDATE signals_requested_sets
-            SET shard_id = :shard_id, 
-                namespace_id = :namespace_id, 
-                workflow_id = :workflow_id, 
-                run_id = :run_id
-            WHERE shard_id = :shard_id 
-            AND namespace_id = :namespace_id 
-            AND workflow_id = :workflow_id 
-            AND run_id = :run_id 
-            AND signal_id = :signal_id
-        `
-
-		// For batch operations with go-ora, create separate slices for each column
-		shardIDs := make([]int32, len(updates))
-		namespaceIDs := make([][]byte, len(updates))
-		workflowIDs := make([]string, len(updates))
-		runIDs := make([][]byte, len(updates))
-		signalIDs := make([]string, len(updates))
-
-		for i, row := range updates {
-			shardIDs[i] = row.ShardID
-			namespaceIDs[i] = row.NamespaceID.Downcast()
-			workflowIDs[i] = row.WorkflowID
-			runIDs[i] = row.RunID.Downcast()
-			signalIDs[i] = row.SignalID
-		}
-
-		// Create batch parameter map
-		batchUpdateParams := map[string]interface{}{
-			"shard_id":     shardIDs,
-			"namespace_id": namespaceIDs,
-			"workflow_id":  workflowIDs,
-			"run_id":       runIDs,
-			"signal_id":    signalIDs,
-		}
-
-		if _, err = tx.NamedExecContext(ctx, updateQuery, batchUpdateParams); err != nil {
-			return nil, err
-		}
-	}
-
-	// Process inserts if needed
-	if len(inserts) > 0 {
+	// Process each row
+	rowsAffected := int64(0)
+	for _, row := range rows {
+		// Try inserting - ignore ORA-00001 (unique constraint violation)
 		insertQuery := `
             INSERT INTO signals_requested_sets
             (shard_id, namespace_id, workflow_id, run_id, signal_id)
             VALUES (:shard_id, :namespace_id, :workflow_id, :run_id, :signal_id)
         `
 
-		// For batch operations with go-ora, create separate slices for each column
-		shardIDs := make([]int32, len(inserts))
-		namespaceIDs := make([][]byte, len(inserts))
-		workflowIDs := make([]string, len(inserts))
-		runIDs := make([][]byte, len(inserts))
-		signalIDs := make([]string, len(inserts))
-
-		for i, row := range inserts {
-			shardIDs[i] = row.ShardID
-			namespaceIDs[i] = row.NamespaceID.Downcast()
-			workflowIDs[i] = row.WorkflowID
-			runIDs[i] = row.RunID.Downcast()
-			signalIDs[i] = row.SignalID
+		params := map[string]interface{}{
+			"shard_id":     row.ShardID,
+			"namespace_id": row.NamespaceID.Downcast(),
+			"workflow_id":  row.WorkflowID,
+			"run_id":       row.RunID.Downcast(),
+			"signal_id":    row.SignalID,
 		}
 
-		// Create batch parameter map
-		batchInsertParams := map[string]interface{}{
-			"shard_id":     shardIDs,
-			"namespace_id": namespaceIDs,
-			"workflow_id":  workflowIDs,
-			"run_id":       runIDs,
-			"signal_id":    signalIDs,
-		}
+		result, insertErr := tx.NamedExecContext(ctx, insertQuery, params)
 
-		if _, err = tx.NamedExecContext(ctx, insertQuery, batchInsertParams); err != nil {
-			return nil, err
+		// If error is not a unique constraint violation, return it
+		if insertErr != nil {
+			// Check if error is ORA-00001 (unique constraint violation)
+			if !strings.Contains(insertErr.Error(), "ORA-00001") {
+				return nil, insertErr
+			}
+			// If duplicate, just continue - this is expected
+		} else {
+			// If insert succeeded, count affected rows
+			if count, _ := result.RowsAffected(); count > 0 {
+				rowsAffected += count
+			}
 		}
 	}
 
@@ -868,10 +754,10 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 		return nil, err
 	}
 
-	// Return a dummy result
+	committed = true
+
 	return &queryResult{
-		lastInsertedID: int64(len(inserts)),
-		rowsAffected:   int64(len(inserts) + len(updates)),
+		rowsAffected: rowsAffected,
 	}, nil
 }
 
@@ -930,12 +816,23 @@ func (mdb *db) DeleteFromSignalsRequestedSets(
 	return mdb.NamedExecContext(ctx, query, params)
 }
 
-// DeleteAllFromSignalsRequestedSets deletes all rows from signals_requested_sets table
+// DeleteAllFromSignalsRequestedSets deletes all rows from signals_requested_sets table: bugged
 func (mdb *db) DeleteAllFromSignalsRequestedSets(
 	ctx context.Context,
 	filter sqlplugin.SignalsRequestedSetsAllFilter,
 ) (sql.Result, error) {
-	return mdb.NamedExecContext(ctx,
+	signalsBefore, err := mdb.SelectAllFromSignalsRequestedSets(ctx, sqlplugin.SignalsRequestedSetsAllFilter{
+		ShardID:     filter.ShardID,
+		NamespaceID: filter.NamespaceID,
+		WorkflowID:  filter.WorkflowID,
+		RunID:       filter.RunID,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
+	}
+
+	sqlRes, err := mdb.NamedExecContext(ctx,
 		deleteAllSignalsRequestedSetQry,
 		map[string]interface{}{
 			"shard_id":     filter.ShardID,
@@ -944,6 +841,42 @@ func (mdb *db) DeleteAllFromSignalsRequestedSets(
 			"run_id":       filter.RunID.Downcast(),
 		},
 	)
+	if err != nil {
+		return nil, fmt.Errorf("delete Signal Request Set with the following params: %w", err)
+	}
+
+	rowsAffected, err := sqlRes.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
+	}
+
+	fmt.Printf("Delete Signal Request Set with the following params: %v. Rows affected %d\n", filter, rowsAffected)
+
+	signalsNow, err := mdb.SelectAllFromSignalsRequestedSets(ctx, sqlplugin.SignalsRequestedSetsAllFilter{
+		ShardID:     filter.ShardID,
+		NamespaceID: filter.NamespaceID,
+		WorkflowID:  filter.WorkflowID,
+		RunID:       filter.RunID,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
+	}
+
+	signalsBeforeM, err := json.Marshal(signalsBefore)
+	if err != nil {
+		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
+	}
+
+	signalsNowM, err := json.Marshal(signalsNow)
+	if err != nil {
+		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
+	}
+
+	fmt.Printf("Signals before: %s\n", signalsBeforeM)
+	fmt.Printf("Signals now: %s\n", signalsNowM)
+
+	return sqlRes, nil
 }
 
 // replaceIntoInfoMaps is a generic function to replace rows in any info maps table

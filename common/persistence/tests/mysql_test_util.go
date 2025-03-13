@@ -115,6 +115,10 @@ func SetupMySQLDatabase(t *testing.T, cfg *config.SQL) {
 	// NOTE need to connect with empty name to create new database
 	adminCfg.DatabaseName = ""
 
+	cfg.DatabaseName = "temporal_test"
+
+	t.Logf("CREATED DATABASE WITH NAME '%s'", cfg.DatabaseName)
+
 	db, err := sql.NewSQLAdminDB(sqlplugin.DbKindUnknown, &adminCfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
 	if err != nil {
 		t.Fatalf("unable to create MySQL admin DB: %v", err)
