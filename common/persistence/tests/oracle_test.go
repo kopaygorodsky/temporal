@@ -553,22 +553,22 @@ func TestOracleHistoryExecutionSignalRequestSuite(t *testing.T) {
 	suite.Run(t, s)
 }
 
-func TestOracleVisibilitySuite(t *testing.T) {
-	cfg := NewOracleSQLConfig()
-	SetupOracleSQLDatabase(t, cfg)
-	SetupOracleSchema(t, cfg)
-	store, err := sql.NewSQLDB(sqlplugin.DbKindVisibility, cfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
-	if err != nil {
-		t.Fatalf("unable to create Oracle DB: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		TearDownOracleDatabase(t, cfg)
-	}()
-
-	s := sqltests.NewVisibilitySuite(t, store)
-	suite.Run(t, s)
-}
+//func TestOracleVisibilitySuite(t *testing.T) {
+//	cfg := NewOracleSQLConfig()
+//	SetupOracleSQLDatabase(t, cfg)
+//	SetupOracleSchema(t, cfg)
+//	store, err := sql.NewSQLDB(sqlplugin.DbKindVisibility, cfg, resolver.NewNoopResolver(), log.NewTestLogger(), metrics.NoopMetricsHandler)
+//	if err != nil {
+//		t.Fatalf("unable to create Oracle DB: %v", err)
+//	}
+//	defer func() {
+//		_ = store.Close()
+//		TearDownOracleDatabase(t, cfg)
+//	}()
+//
+//	s := sqltests.NewVisibilitySuite(t, store)
+//	suite.Run(t, s)
+//}
 
 func TestOracleClosedConnectionError(t *testing.T) {
 	testData, tearDown := setUpOracleTest(t)

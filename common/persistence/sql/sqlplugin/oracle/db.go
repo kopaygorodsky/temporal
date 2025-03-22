@@ -112,12 +112,12 @@ func (mdb *db) BeginTx(ctx context.Context) (sqlplugin.Tx, error) {
 // BeginWithFullTxx is a stupid method that I'm gonna get rid of once moved to implmenetation own stores and not a sql plugin.
 // reason: sqlplugin.Tx DOES NOT HAVE EXEC method, only TableCRUD operations.
 // I understand the intention but there are usecases for custom stuff as not everything is supported various SQL databases.
-func (mdb *db) BeginWithFullTxx(ctx context.Context) (*db, error) {
+func (mdb *db) BeginWithFullTxx(ctx context.Context, opt *sql.TxOptions) (*db, error) {
 	db, err := mdb.handle.DB()
 	if err != nil {
 		return nil, err
 	}
-	xtx, err := db.BeginTxx(ctx, nil)
+	xtx, err := db.BeginTxx(ctx, opt)
 	if err != nil {
 		return nil, mdb.handle.ConvertError(err)
 	}

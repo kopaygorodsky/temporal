@@ -1,0 +1,70 @@
+services:
+  oracle:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: oracle_main
+    restart: unless-stopped
+    ports:
+      - "1521:1521"  # Oracle SQL*Net Listener
+      - "5500:5500"  # Enterprise Manager Express
+    environment:
+      - ORACLE_PWD=temporal
+      - ORACLE_CHARACTERSET=AL32UTF8
+      - ORACLE_SID=FREE
+    volumes:
+      - ./oracle/data:/opt/oracle/oradata  # Persistent storage for database files
+      - ./oracle/setup:/opt/oracle/scripts/setup  # Setup scripts - run once
+      - ./oracle/startup:/opt/oracle/scripts/startup  # Startup scripts - run each time container starts
+    networks:
+      - temporal-network
+  temporal:
+    container_name: temporal
+    depends_on:
+      - oracle
+    environment:
+      - DB=oracle
+      - DBNAME=C##temporal
+      - VISIBILITY_DBNAME=C##temporal
+      - DB_PORT=1521
+      - ORACLE_USER=C##temporal
+      - ORACLE_PWD=temporal
+      - ORACLE_SEEDS=oracle_main
+      - ORACLE_SERVICE=FREEPDB1
+#      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    image: vlad2pac/temporal-server:0.0.3
+    networks:
+      - temporal-network
+    ports:
+      - 7233:7233
+#    volumes:
+#      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+  temporal-admin-tools:
+    container_name: temporal-admin-tools
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_ADDRESS=temporal:7233
+    image: vlad2pac/temporal-admin-tools:0.0.3
+    networks:
+      - temporal-network
+    stdin_open: true
+    tty: true
+
+  temporal-ui:
+    container_name: temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    image: temporalio/ui:2.36.0
+    networks:
+      - temporal-network
+    ports:
+      - 8080:8080
+
+
+networks:
+  temporal-network:
+    driver: bridge
+    name: temporal-network

@@ -578,10 +578,37 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 	ctx context.Context,
 	rows []sqlplugin.SignalsRequestedSetsRow,
 ) (sql.Result, error) {
-	return mdb.NamedExecContext(ctx,
+	fmt.Printf("Submitted inserts: %v\n", rows)
+
+	filter := sqlplugin.SignalsRequestedSetsAllFilter{
+		ShardID:     rows[0].ShardID,
+		NamespaceID: rows[0].NamespaceID,
+		WorkflowID:  rows[0].WorkflowID,
+		RunID:       rows[0].RunID,
+	}
+
+	beforeRows, err := mdb.SelectAllFromSignalsRequestedSets(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("SelectAllFromSignalsRequestedSets: %v", err)
+	}
+
+	replaceQuery, err := mdb.NamedExecContext(ctx,
 		createSignalsRequestedSetQry,
 		rows,
 	)
+
+	if err != nil {
+		return nil, fmt.Errorf("insert signals_requested_sets: %w", err)
+	}
+
+	afterRows, err := mdb.SelectAllFromSignalsRequestedSets(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("SelectAllFromSignalsRequestedSets: %w", err)
+	}
+
+	sqlplugin.DebugSignalRows("debugging", beforeRows, afterRows)
+
+	return replaceQuery, nil
 
 }
 

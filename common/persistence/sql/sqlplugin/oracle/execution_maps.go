@@ -3,7 +3,6 @@ package oracle
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -691,7 +690,7 @@ workflow_id = :workflow_id AND
 run_id = :run_id`
 )
 
-// ReplaceIntoSignalsRequestedSets inserts records while ignoring duplicate key violations
+//ReplaceIntoSignalsRequestedSets implements MySQL-like ON DUPLICATE KEY behavior for Oracle
 func (mdb *db) ReplaceIntoSignalsRequestedSets(
 	ctx context.Context,
 	rows []sqlplugin.SignalsRequestedSetsRow,
@@ -700,30 +699,26 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 		return nil, nil
 	}
 
-	// Start transaction
-	tx, err := mdb.BeginWithFullTxx(ctx)
+	// Begin transaction
+	tx, err := mdb.BeginWithFullTxx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	// Ensure proper cleanup
-	var committed bool
 	defer func() {
-		if !committed && tx != nil {
+		if err != nil {
 			tx.Rollback()
 		}
 	}()
 
-	// Process each row
-	rowsAffected := int64(0)
-	for _, row := range rows {
-		// Try inserting - ignore ORA-00001 (unique constraint violation)
-		insertQuery := `
-            INSERT INTO signals_requested_sets
-            (shard_id, namespace_id, workflow_id, run_id, signal_id)
-            VALUES (:shard_id, :namespace_id, :workflow_id, :run_id, :signal_id)
-        `
+	insertQuery := `
+		INSERT INTO signals_requested_sets
+		(shard_id, namespace_id, workflow_id, run_id, signal_id)
+		VALUES (:shard_id, :namespace_id, :workflow_id, :run_id, :signal_id)
+	`
 
+	// Process each row individually to handle duplicates
+	successCount := 0
+	for _, row := range rows {
 		params := map[string]interface{}{
 			"shard_id":     row.ShardID,
 			"namespace_id": row.NamespaceID.Downcast(),
@@ -732,21 +727,15 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 			"signal_id":    row.SignalID,
 		}
 
-		result, insertErr := tx.NamedExecContext(ctx, insertQuery, params)
-
-		// If error is not a unique constraint violation, return it
-		if insertErr != nil {
-			// Check if error is ORA-00001 (unique constraint violation)
-			if !strings.Contains(insertErr.Error(), "ORA-00001") {
-				return nil, insertErr
+		_, err := tx.NamedExecContext(ctx, insertQuery, params)
+		if err != nil {
+			if tx.IsDupEntryError(err) {
+				continue
 			}
-			// If duplicate, just continue - this is expected
-		} else {
-			// If insert succeeded, count affected rows
-			if count, _ := result.RowsAffected(); count > 0 {
-				rowsAffected += count
-			}
+			// Any other error should be returned
+			return nil, err
 		}
+		successCount++
 	}
 
 	// Commit transaction
@@ -754,10 +743,10 @@ func (mdb *db) ReplaceIntoSignalsRequestedSets(
 		return nil, err
 	}
 
-	committed = true
-
+	// Return a dummy result
 	return &queryResult{
-		rowsAffected: rowsAffected,
+		lastInsertedID: int64(successCount),
+		rowsAffected:   int64(successCount),
 	}, nil
 }
 
@@ -821,17 +810,6 @@ func (mdb *db) DeleteAllFromSignalsRequestedSets(
 	ctx context.Context,
 	filter sqlplugin.SignalsRequestedSetsAllFilter,
 ) (sql.Result, error) {
-	signalsBefore, err := mdb.SelectAllFromSignalsRequestedSets(ctx, sqlplugin.SignalsRequestedSetsAllFilter{
-		ShardID:     filter.ShardID,
-		NamespaceID: filter.NamespaceID,
-		WorkflowID:  filter.WorkflowID,
-		RunID:       filter.RunID,
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
-	}
-
 	sqlRes, err := mdb.NamedExecContext(ctx,
 		deleteAllSignalsRequestedSetQry,
 		map[string]interface{}{
@@ -844,37 +822,6 @@ func (mdb *db) DeleteAllFromSignalsRequestedSets(
 	if err != nil {
 		return nil, fmt.Errorf("delete Signal Request Set with the following params: %w", err)
 	}
-
-	rowsAffected, err := sqlRes.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
-	}
-
-	fmt.Printf("Delete Signal Request Set with the following params: %v. Rows affected %d\n", filter, rowsAffected)
-
-	signalsNow, err := mdb.SelectAllFromSignalsRequestedSets(ctx, sqlplugin.SignalsRequestedSetsAllFilter{
-		ShardID:     filter.ShardID,
-		NamespaceID: filter.NamespaceID,
-		WorkflowID:  filter.WorkflowID,
-		RunID:       filter.RunID,
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
-	}
-
-	signalsBeforeM, err := json.Marshal(signalsBefore)
-	if err != nil {
-		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
-	}
-
-	signalsNowM, err := json.Marshal(signalsNow)
-	if err != nil {
-		return nil, fmt.Errorf("delete Signal Request Set with the following rows affected: %w", err)
-	}
-
-	fmt.Printf("Signals before: %s\n", signalsBeforeM)
-	fmt.Printf("Signals now: %s\n", signalsNowM)
 
 	return sqlRes, nil
 }
@@ -1009,7 +956,7 @@ func replaceIntoInfoMaps[T any](
 	}
 
 	// Begin transaction
-	tx, err := db.BeginWithFullTxx(ctx)
+	tx, err := db.BeginWithFullTxx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
