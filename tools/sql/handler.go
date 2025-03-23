@@ -82,6 +82,7 @@ func updateSchema(cli *cli.Context, logger log.Logger) error {
 
 // createDatabase creates a sql database
 func createDatabase(cli *cli.Context, logger log.Logger) error {
+	logger.Info("elon musk is pidar")
 	cfg, err := parseConnectConfig(cli)
 	if err != nil {
 		logger.Error("Unable to read config.", tag.Error(schema.NewConfigError(err.Error())))
