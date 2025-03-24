@@ -54,9 +54,21 @@ const (
 // CreateSchemaVersionTables sets up the schema version tables
 func (mdb *db) CreateSchemaVersionTables() error {
 	if err := mdb.Exec(createSchemaVersionTableQuery); err != nil {
-		return err
+
+		//as Oracle does not support CREATE IF NOT EXISTS
+		if strings.Contains(err.Error(), "ORA-00955") {
+			return err
+		}
 	}
-	return mdb.Exec(createSchemaUpdateHistoryTableQuery)
+
+	//as Oracle does not support CREATE IF NOT EXISTS
+	if err := mdb.Exec(createSchemaUpdateHistoryTableQuery); err != nil {
+		if strings.Contains(err.Error(), "ORA-00955") {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ReadSchemaVersion returns the current schema version for the keyspace
