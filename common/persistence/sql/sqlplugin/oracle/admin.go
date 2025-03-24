@@ -56,14 +56,14 @@ func (mdb *db) CreateSchemaVersionTables() error {
 	if err := mdb.Exec(createSchemaVersionTableQuery); err != nil {
 
 		//as Oracle does not support CREATE IF NOT EXISTS
-		if strings.Contains(err.Error(), "ORA-00955") {
+		if !strings.Contains(err.Error(), "ORA-00955") {
 			return err
 		}
 	}
 
 	//as Oracle does not support CREATE IF NOT EXISTS
 	if err := mdb.Exec(createSchemaUpdateHistoryTableQuery); err != nil {
-		if strings.Contains(err.Error(), "ORA-00955") {
+		if !strings.Contains(err.Error(), "ORA-00955") {
 			return err
 		}
 	}
