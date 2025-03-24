@@ -1,5 +1,5 @@
 package oracle
 
-const Version = "23"
+const Version = "1.0"
 
-const VisibilityVersion = "23"
+const VisibilityVersion = "1.0"
