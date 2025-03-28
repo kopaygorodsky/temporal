@@ -6,30 +6,210 @@ import (
 	"errors"
 	"fmt"
 	go_ora "github.com/sijms/go-ora/v2"
+	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin/oracle/session"
 	"strings"
 	"time"
-
-	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 )
 
 const (
-	templateInsertCustomSearchAttributes = `
-		MERGE INTO custom_search_attributes t
+	// Explicit INSERT statement for workflow execution
+	templateInsertWorkflowExecution = `
+		INSERT INTO executions_visibility (
+			namespace_id, 
+			run_id, 
+			workflow_type_name,
+			workflow_id,
+			start_time,
+			execution_time,
+			status,
+			close_time,
+			history_length,
+			history_size_bytes,
+			execution_duration,
+			state_transition_count,
+			memo,
+			encoding,
+			task_queue,
+			search_attributes,
+			parent_workflow_id,
+			parent_run_id,
+			root_workflow_id,
+			root_run_id,
+			version_num
+		) VALUES (
+			:namespace_id, 
+			:run_id, 
+			:workflow_type_name,
+			:workflow_id,
+			:start_time,
+			:execution_time,
+			:status,
+			:close_time,
+			:history_length,
+			:history_size_bytes,
+			:execution_duration,
+			:state_transition_count,
+			:memo,
+			:encoding,
+			:task_queue,
+			:search_attributes,
+			:parent_workflow_id,
+			:parent_run_id,
+			:root_workflow_id,
+			:root_run_id,
+			:version_num
+		)`
+
+	templateUpdateWorkflowExecution = `
+		UPDATE executions_visibility
+		SET 
+			workflow_type_name = :workflow_type_name,
+			workflow_id = :workflow_id,
+			start_time = :start_time,
+			execution_time = :execution_time,
+			status = :status,
+			close_time = :close_time,
+			history_length = :history_length,
+			history_size_bytes = :history_size_bytes,
+			execution_duration = :execution_duration,
+			state_transition_count = :state_transition_count,
+			memo = :memo,
+			encoding = :encoding,
+			task_queue = :task_queue,
+			search_attributes = :search_attributes,
+			parent_workflow_id = :parent_workflow_id,
+			parent_run_id = :parent_run_id,
+			root_workflow_id = :root_workflow_id,
+			root_run_id = :root_run_id,
+			version_num = :version_num
+		WHERE 
+			namespace_id = :namespace_id 
+			AND run_id = :run_id
+			AND version_num < :version_num`
+
+	// Explicit MERGE statement for workflow execution upsert
+	templateUpsertWorkflowExecution = `
+		MERGE INTO executions_visibility t
 		USING (
 			SELECT 
 				:namespace_id as namespace_id,
 				:run_id as run_id,
-				:search_attributes as search_attributes
+				:workflow_type_name as workflow_type_name,
+				:workflow_id as workflow_id,
+				:start_time as start_time,
+				:execution_time as execution_time,
+				:status as status,
+				:close_time as close_time,
+				:history_length as history_length,
+				:history_size_bytes as history_size_bytes,
+				:execution_duration as execution_duration,
+				:state_transition_count as state_transition_count,
+				:memo as memo,
+				:encoding as encoding,
+				:task_queue as task_queue,
+				:search_attributes as search_attributes,
+				:parent_workflow_id as parent_workflow_id,
+				:parent_run_id as parent_run_id,
+				:root_workflow_id as root_workflow_id,
+				:root_run_id as root_run_id,
+				:version_num as version_num
 			FROM dual
 		) s
 		ON (t.namespace_id = s.namespace_id AND t.run_id = s.run_id)
 		WHEN MATCHED THEN
-			UPDATE SET search_attributes = s.search_attributes
+			UPDATE SET 
+				t.workflow_type_name = CASE WHEN t.version_num < s.version_num THEN s.workflow_type_name ELSE t.workflow_type_name END,
+				t.workflow_id = CASE WHEN t.version_num < s.version_num THEN s.workflow_id ELSE t.workflow_id END,
+				t.start_time = CASE WHEN t.version_num < s.version_num THEN s.start_time ELSE t.start_time END,
+				t.execution_time = CASE WHEN t.version_num < s.version_num THEN s.execution_time ELSE t.execution_time END,
+				t.status = CASE WHEN t.version_num < s.version_num THEN s.status ELSE t.status END,
+				t.close_time = CASE WHEN t.version_num < s.version_num THEN s.close_time ELSE t.close_time END,
+				t.history_length = CASE WHEN t.version_num < s.version_num THEN s.history_length ELSE t.history_length END,
+				t.history_size_bytes = CASE WHEN t.version_num < s.version_num THEN s.history_size_bytes ELSE t.history_size_bytes END,
+				t.execution_duration = CASE WHEN t.version_num < s.version_num THEN s.execution_duration ELSE t.execution_duration END,
+				t.state_transition_count = CASE WHEN t.version_num < s.version_num THEN s.state_transition_count ELSE t.state_transition_count END,
+				t.memo = CASE WHEN t.version_num < s.version_num THEN s.memo ELSE t.memo END,
+				t.encoding = CASE WHEN t.version_num < s.version_num THEN s.encoding ELSE t.encoding END,
+				t.task_queue = CASE WHEN t.version_num < s.version_num THEN s.task_queue ELSE t.task_queue END,
+				t.search_attributes = CASE WHEN t.version_num < s.version_num THEN s.search_attributes ELSE t.search_attributes END,
+				t.parent_workflow_id = CASE WHEN t.version_num < s.version_num THEN s.parent_workflow_id ELSE t.parent_workflow_id END,
+				t.parent_run_id = CASE WHEN t.version_num < s.version_num THEN s.parent_run_id ELSE t.parent_run_id END,
+				t.root_workflow_id = CASE WHEN t.version_num < s.version_num THEN s.root_workflow_id ELSE t.root_workflow_id END,
+				t.root_run_id = CASE WHEN t.version_num < s.version_num THEN s.root_run_id ELSE t.root_run_id END,
+				t.version_num = CASE WHEN t.version_num < s.version_num THEN s.version_num ELSE t.version_num END
 		WHEN NOT MATCHED THEN
-			INSERT (namespace_id, run_id, search_attributes)
-			VALUES (s.namespace_id, s.run_id, s.search_attributes)`
+			INSERT (
+				namespace_id, 
+				run_id, 
+				workflow_type_name,
+				workflow_id,
+				start_time,
+				execution_time,
+				status,
+				close_time,
+				history_length,
+				history_size_bytes,
+				execution_duration,
+				state_transition_count,
+				memo,
+				encoding,
+				task_queue,
+				search_attributes,
+				parent_workflow_id,
+				parent_run_id,
+				root_workflow_id,
+				root_run_id,
+				version_num
+			) VALUES (
+				s.namespace_id, 
+				s.run_id, 
+				s.workflow_type_name,
+				s.workflow_id,
+				s.start_time,
+				s.execution_time,
+				s.status,
+				s.close_time,
+				s.history_length,
+				s.history_size_bytes,
+				s.execution_duration,
+				s.state_transition_count,
+				s.memo,
+				s.encoding,
+				s.task_queue,
+				s.search_attributes,
+				s.parent_workflow_id,
+				s.parent_run_id,
+				s.root_workflow_id,
+				s.root_run_id,
+				s.version_num
+			)`
 
+	// Explicit INSERT SQL for custom search attributes
+	templateInsertCustomSearchAttributes = `
+		INSERT INTO custom_search_attributes (
+			namespace_id, 
+			run_id, 
+			search_attributes,
+			version_num
+		) VALUES (
+			:namespace_id, 
+			:run_id, 
+			:search_attributes,
+			:version_num
+		)`
+
+	templateUpdateCustomSearchAttributes = `
+	UPDATE custom_search_attributes
+		SET 
+			search_attributes = :search_attributes,
+			version_num = :version_num
+		WHERE 
+			namespace_id = :namespace_id 
+			AND run_id = :run_id
+			AND version_num < :version_num`
+
+	// Explicit UPSERT SQL for custom search attributes
 	templateUpsertCustomSearchAttributes = `
 		MERGE INTO custom_search_attributes t
 		USING (
@@ -37,142 +217,89 @@ const (
 				:namespace_id as namespace_id,
 				:run_id as run_id,
 				:search_attributes as search_attributes,
-				:_version as _version
+				:version_num as version_num
 			FROM dual
 		) s
 		ON (t.namespace_id = s.namespace_id AND t.run_id = s.run_id)
 		WHEN MATCHED THEN
 			UPDATE SET 
-				search_attributes = CASE WHEN t._version < s._version THEN s.search_attributes ELSE t.search_attributes END,
-				_version = CASE WHEN t._version < s._version THEN s._version ELSE t._version END
+				search_attributes = CASE WHEN t.version_num < s.version_num THEN s.search_attributes ELSE t.search_attributes END,
+				version_num = CASE WHEN t.version_num < s.version_num THEN s.version_num ELSE t.version_num END
 		WHEN NOT MATCHED THEN
-			INSERT (namespace_id, run_id, search_attributes, _version)
-			VALUES (s.namespace_id, s.run_id, s.search_attributes, s._version)`
+			INSERT (namespace_id, run_id, search_attributes, version_num)
+			VALUES (s.namespace_id, s.run_id, s.search_attributes, s.version_num)`
 
-	templateDeleteWorkflowExecution_v8 = `
+	// Explicit GET SQL for workflow execution
+	templateGetWorkflowExecution = `
+		SELECT 
+			namespace_id,
+			run_id,
+			workflow_type_name,
+			workflow_id,
+			start_time,
+			execution_time,
+			status,
+			close_time,
+			history_length,
+			history_size_bytes,
+			execution_duration,
+			state_transition_count,
+			memo,
+			encoding,
+			task_queue,
+			search_attributes,
+			parent_workflow_id,
+			parent_run_id,
+			root_workflow_id,
+			root_run_id,
+			version_num
+		FROM executions_visibility
+		WHERE namespace_id = :namespace_id AND run_id = :run_id`
+
+	// Explicit DELETE SQL for workflow execution
+	templateDeleteWorkflowExecution = `
 		DELETE FROM executions_visibility
 		WHERE namespace_id = :namespace_id AND run_id = :run_id`
 
+	// Explicit DELETE SQL for custom search attributes
 	templateDeleteCustomSearchAttributes = `
 		DELETE FROM custom_search_attributes
 		WHERE namespace_id = :namespace_id AND run_id = :run_id`
 )
 
-var (
-	templateInsertWorkflowExecution = fmt.Sprintf(
-		`INSERT INTO executions_visibility (%s)
-		VALUES (%s)`,
-		strings.Join(sqlplugin.DbFields, ", "),
-		sqlplugin.BuildNamedPlaceholder(sqlplugin.DbFields...),
-	)
-	// Oracle MERGE statement for upsert
-	templateUpsertWorkflowExecution = fmt.Sprintf(
-		`MERGE INTO executions_visibility t
-		USING (
-			SELECT %s FROM dual
-		) s
-		ON (t.namespace_id = s.namespace_id AND t.run_id = s.run_id)
-		WHEN MATCHED THEN
-			UPDATE SET %s
-		WHEN NOT MATCHED THEN
-			INSERT (%s)
-			VALUES (%s)`,
-		buildOracleDualSource(sqlplugin.DbFields),
-		buildOracleUpdateSet(sqlplugin.DbFields),
-		strings.Join(sqlplugin.DbFields, ", "),
-		strings.Join(prefixFields("s.", sqlplugin.DbFields), ", "),
-	)
-	templateGetWorkflowExecution_v8 = fmt.Sprintf(
-		`SELECT %s FROM executions_visibility
-		WHERE namespace_id = :namespace_id AND run_id = :run_id`,
-		strings.Join(sqlplugin.DbFields, ", "),
-	)
-)
-
-// Helper function to create the source part of MERGE statement for Oracle
-func buildOracleDualSource(fields []string) string {
-	sourceParts := make([]string, len(fields))
-	for i, field := range fields {
-		sourceParts[i] = fmt.Sprintf(":%s as %s", field, field)
-	}
-	return strings.Join(sourceParts, ", ")
-}
-
-// Helper function to create the UPDATE SET part of MERGE statement for Oracle with versioning
-func buildOracleUpdateSet(fields []string) string {
-	versionIdx := -1
-	for i, field := range fields {
-		if field == sqlplugin.VersionColumnName {
-			versionIdx = i
-			break
-		}
-	}
-
-	if versionIdx < 0 {
-		// If version column isn't found, just do a regular update
-		updateParts := make([]string, len(fields))
-		for i, field := range fields {
-			updateParts[i] = fmt.Sprintf("t.%s = s.%s", field, field)
-		}
-		return strings.Join(updateParts, ", ")
-	}
-
-	// With version column, we need to update only if new version is greater
-	updateParts := make([]string, len(fields))
-	for i, field := range fields {
-		if field == sqlplugin.VersionColumnName {
-			updateParts[i] = fmt.Sprintf("t.%s = CASE WHEN t.%s < s.%s THEN s.%s ELSE t.%s END",
-				field, sqlplugin.VersionColumnName, sqlplugin.VersionColumnName, field, field)
-		} else {
-			updateParts[i] = fmt.Sprintf("t.%s = CASE WHEN t.%s < s.%s THEN s.%s ELSE t.%s END",
-				field, sqlplugin.VersionColumnName, sqlplugin.VersionColumnName, field, field)
-		}
-	}
-	return strings.Join(updateParts, ", ")
-}
-
-// Helper function to prefix fields (s.field1, s.field2, ...)
-func prefixFields(prefix string, fields []string) []string {
-	result := make([]string, len(fields))
-	for i, field := range fields {
-		result[i] = prefix + field
-	}
-	return result
-}
-
+// execLocalVisibilityRow represents a row in the visibility table
 type execLocalVisibilityRow struct {
-	NamespaceID          string                 `db:"namespace_id"`
-	RunID                string                 `db:"run_id"`
-	WorkflowTypeName     string                 `db:"workflow_type_name"`
-	WorkflowID           string                 `db:"workflow_id"`
-	StartTime            go_ora.TimeStamp       `db:"start_time"`
-	ExecutionTime        go_ora.TimeStamp       `db:"execution_time"`
-	Status               int32                  `db:"status"`
-	CloseTime            *go_ora.TimeStamp      `db:"close_time"`
-	HistoryLength        *int64                 `db:"history_length"`
-	HistorySizeBytes     *int64                 `db:"history_size_bytes"`
-	ExecutionDuration    *time.Duration         `db:"execution_duration"`
-	StateTransitionCount *int64                 `db:"state_transition_count"`
-	Memo                 []byte                 `db:"memo"`
-	Encoding             string                 `db:"encoding"`
-	TaskQueue            string                 `db:"task_queue"`
-	SearchAttributes     map[string]interface{} `db:"search_attributes"`
-	ParentWorkflowID     *string                `db:"parent_workflow_id"`
-	ParentRunID          *string                `db:"parent_run_id"`
-	RootWorkflowID       string                 `db:"root_workflow_id"`
-	RootRunID            string                 `db:"root_run_id"`
-
-	// Version must be at the end because the version column has to be the last column in the insert statement.
-	// Otherwise we may do partial updates as the version changes halfway through.
-	// This is because MySQL doesn't support row versioning in a way that prevents out-of-order updates.
-	Version int64 `db:"_version"`
+	NamespaceID          string                               `db:"namespace_id"`
+	RunID                string                               `db:"run_id"`
+	WorkflowTypeName     string                               `db:"workflow_type_name"`
+	WorkflowID           string                               `db:"workflow_id"`
+	StartTime            go_ora.TimeStamp                     `db:"start_time"`
+	ExecutionTime        go_ora.TimeStamp                     `db:"execution_time"`
+	Status               int32                                `db:"status"`
+	CloseTime            *go_ora.TimeStamp                    `db:"close_time"`
+	HistoryLength        *int64                               `db:"history_length"`
+	HistorySizeBytes     *int64                               `db:"history_size_bytes"`
+	ExecutionDuration    *time.Duration                       `db:"execution_duration"`
+	StateTransitionCount *int64                               `db:"state_transition_count"`
+	Memo                 []byte                               `db:"memo"`
+	Encoding             string                               `db:"encoding"`
+	TaskQueue            string                               `db:"task_queue"`
+	SearchAttributes     sqlplugin.VisibilitySearchAttributes `db:"search_attributes"`
+	ParentWorkflowID     *string                              `db:"parent_workflow_id"`
+	ParentRunID          *string                              `db:"parent_run_id"`
+	RootWorkflowID       string                               `db:"root_workflow_id"`
+	RootRunID            string                               `db:"root_run_id"`
+	VersionNum           int64                                `db:"version_num"` // Changed from Version to VersionNum for consistency
 }
 
 func newExecLocalVisibilityRow(row *sqlplugin.VisibilityRow) *execLocalVisibilityRow {
-
+	var attrs sqlplugin.VisibilitySearchAttributes
+	if row.SearchAttributes != nil {
+		attrs = *row.SearchAttributes
+	}
 	return &execLocalVisibilityRow{
-		NamespaceID:          row.NamespaceID,
-		RunID:                row.RunID,
+		NamespaceID:          padID(row.NamespaceID),
+		RunID:                padID(row.RunID),
 		WorkflowTypeName:     row.WorkflowTypeName,
 		WorkflowID:           row.WorkflowID,
 		StartTime:            go_ora.TimeStamp(row.StartTime),
@@ -186,12 +313,12 @@ func newExecLocalVisibilityRow(row *sqlplugin.VisibilityRow) *execLocalVisibilit
 		Memo:                 row.Memo,
 		Encoding:             row.Encoding,
 		TaskQueue:            row.TaskQueue,
-		SearchAttributes:     nil,
+		SearchAttributes:     attrs,
 		ParentWorkflowID:     row.ParentWorkflowID,
 		ParentRunID:          row.ParentRunID,
 		RootWorkflowID:       row.RootWorkflowID,
 		RootRunID:            row.RootRunID,
-		Version:              row.Version,
+		VersionNum:           row.Version, // Updated field name
 	}
 }
 
@@ -210,20 +337,30 @@ type queryLocalVisibilityRow struct {
 	StateTransitionCount *int64
 	Memo                 []byte
 	Encoding             string
-	TaskQueue            string
+	TaskQueue            sql.NullString
 	SearchAttributes     *sqlplugin.VisibilitySearchAttributes
 	ParentWorkflowID     *string
 	ParentRunID          *string
-	RootWorkflowID       string
-	RootRunID            string
-
-	// Version must be at the end because the version column has to be the last column in the insert statement.
-	// Otherwise we may do partial updates as the version changes halfway through.
-	// This is because MySQL doesn't support row versioning in a way that prevents out-of-order updates.
-	Version int64 `db:"_version"`
+	RootWorkflowID       sql.NullString
+	RootRunID            sql.NullString
+	VersionNum           int64
 }
 
 func (row queryLocalVisibilityRow) toExternalType() sqlplugin.VisibilityRow {
+	taskQueue := ""
+	if row.TaskQueue.Valid {
+		taskQueue = row.TaskQueue.String
+	}
+	rootWorkflowID := ""
+	if row.RootWorkflowID.Valid {
+		rootWorkflowID = row.RootWorkflowID.String
+	}
+
+	rootRunID := ""
+	if row.RootRunID.Valid {
+		rootRunID = row.RootRunID.String
+	}
+
 	return sqlplugin.VisibilityRow{
 		NamespaceID:          row.NamespaceID,
 		RunID:                row.RunID,
@@ -239,51 +376,18 @@ func (row queryLocalVisibilityRow) toExternalType() sqlplugin.VisibilityRow {
 		StateTransitionCount: row.StateTransitionCount,
 		Memo:                 row.Memo,
 		Encoding:             row.Encoding,
-		TaskQueue:            row.TaskQueue,
+		TaskQueue:            taskQueue,
 		SearchAttributes:     row.SearchAttributes,
 		ParentWorkflowID:     row.ParentWorkflowID,
 		ParentRunID:          row.ParentRunID,
-		RootWorkflowID:       row.RootWorkflowID,
-		RootRunID:            row.RootRunID,
-		Version:              row.Version,
+		RootWorkflowID:       rootWorkflowID,
+		RootRunID:            rootRunID,
+		Version:              row.VersionNum,
 	}
 }
 
-// VisibilitySelectFilter contains the column names within executions_visibility table that
-// can be used to filter results through a WHERE clause
-type localVisibilitySelectFilter struct {
-	NamespaceID      string
-	RunID            *string
-	WorkflowID       *string
-	WorkflowTypeName *string
-	Status           int32
-	MinTime          *go_ora.TimeStamp
-	MaxTime          *go_ora.TimeStamp
-	PageSize         *int
-
-	Query     string
-	QueryArgs []interface{}
-	GroupBy   []string
-}
-
-func newLocalVisibilitySelectFilter(filter sqlplugin.VisibilitySelectFilter) *localVisibilitySelectFilter {
-	return &localVisibilitySelectFilter{
-		NamespaceID:      filter.NamespaceID,
-		RunID:            filter.RunID,
-		WorkflowID:       filter.WorkflowID,
-		WorkflowTypeName: filter.WorkflowTypeName,
-		Status:           filter.Status,
-		MinTime:          session.GetOraTimeStampPtr(filter.MinTime),
-		MaxTime:          session.GetOraTimeStampPtr(filter.MaxTime),
-		PageSize:         filter.PageSize,
-		Query:            filter.Query,
-		QueryArgs:        filter.QueryArgs,
-		GroupBy:          filter.GroupBy,
-	}
-}
-
-// InsertIntoVisibility inserts a row into visibility table. If an row already exist,
-// its left as such and no update will be made
+// InsertIntoVisibility inserts a row into visibility table. If a row already exists,
+// it's left as such and no update will be made
 func (mdb *db) InsertIntoVisibility(
 	ctx context.Context,
 	row *sqlplugin.VisibilityRow,
@@ -310,11 +414,16 @@ func (mdb *db) InsertIntoVisibility(
 	}()
 	result, err = tx.NamedExecContext(ctx, templateInsertWorkflowExecution, newExecLocalVisibilityRow(row))
 	if err != nil {
-		return nil, fmt.Errorf("unable to insert workflow execution: %w", err)
+		if !mdb.IsDupEntryError(err) {
+			return nil, fmt.Errorf("unable to insert workflow execution: %w", err)
+		}
 	}
+
 	_, err = tx.NamedExecContext(ctx, templateInsertCustomSearchAttributes, newExecLocalVisibilityRow(row))
 	if err != nil {
-		return nil, fmt.Errorf("unable to insert custom search attributes: %w", err)
+		if !mdb.IsDupEntryError(err) {
+			return nil, fmt.Errorf("unable to insert custom search attributes: %w", err)
+		}
 	}
 	err = tx.Commit()
 	if err != nil {
@@ -323,7 +432,7 @@ func (mdb *db) InsertIntoVisibility(
 	return result, nil
 }
 
-// ReplaceIntoVisibility replaces an existing row if it exist or creates a new row in visibility table
+// ReplaceIntoVisibility replaces an existing row if it exists or creates a new row in visibility table
 func (mdb *db) ReplaceIntoVisibility(
 	ctx context.Context,
 	row *sqlplugin.VisibilityRow,
@@ -348,22 +457,44 @@ func (mdb *db) ReplaceIntoVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	result, err = tx.NamedExecContext(ctx, templateUpsertWorkflowExecution, newExecLocalVisibilityRow(row))
-	if err != nil {
-		return nil, fmt.Errorf("unable to upsert workflow execution: %w", err)
+
+	queryRes := &queryResult{
+		lastInsertedID: 0,
+		rowsAffected:   0,
 	}
-	_, err = tx.NamedExecContext(ctx, templateUpsertCustomSearchAttributes, newExecLocalVisibilityRow(row))
+
+	result, err = tx.NamedExecContext(ctx, templateInsertWorkflowExecution, newExecLocalVisibilityRow(row))
 	if err != nil {
-		return nil, fmt.Errorf("unable to upsert custom search attributes: %w", err)
+		if !mdb.IsDupEntryError(err) {
+			return nil, fmt.Errorf("unable to upsert (insert) workflow execution: %w", err)
+		}
+
+		if _, err := tx.NamedExecContext(ctx, templateUpdateWorkflowExecution, newExecLocalVisibilityRow(row)); err != nil {
+			return nil, fmt.Errorf("unable to upsert (update) workflow execution: %w", err)
+		}
 	}
+
+	queryRes.rowsAffected++
+
+	result, err = tx.NamedExecContext(ctx, templateInsertCustomSearchAttributes, newExecLocalVisibilityRow(row))
+	if err != nil {
+		if !mdb.IsDupEntryError(err) {
+			return nil, fmt.Errorf("unable to upsert (insert) custom search attributes: %w", err)
+		}
+
+		if _, err := tx.NamedExecContext(ctx, templateUpdateCustomSearchAttributes, newExecLocalVisibilityRow(row)); err != nil {
+			return nil, fmt.Errorf("unable to upsert (update) custom search attributes: %w", err)
+		}
+	}
+
 	err = tx.Commit()
 	if err != nil {
 		return nil, err
 	}
-	return result, nil
+	return queryRes, nil
 }
 
-// DeleteFromVisibility deletes a row from visibility table if it exist
+// DeleteFromVisibility deletes a row from visibility table if it exists
 func (mdb *db) DeleteFromVisibility(
 	ctx context.Context,
 	filter sqlplugin.VisibilityDeleteFilter,
@@ -388,16 +519,16 @@ func (mdb *db) DeleteFromVisibility(
 			retError = fmt.Errorf("transaction rollback failed: %w", retError)
 		}
 	}()
-	_, err = mdb.ExecContext(ctx, templateDeleteCustomSearchAttributes, map[string]interface{}{
-		"namespace_id": filter.NamespaceID,
-		"run_id":       filter.RunID,
+	_, err = tx.NamedExecContext(ctx, templateDeleteCustomSearchAttributes, map[string]interface{}{
+		"namespace_id": padID(filter.NamespaceID),
+		"run_id":       padID(filter.RunID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to delete custom search attributes: %w", err)
 	}
-	result, err = mdb.ExecContext(ctx, templateDeleteWorkflowExecution_v8, map[string]interface{}{
-		"namespace_id": filter.NamespaceID,
-		"run_id":       filter.RunID,
+	result, err = tx.NamedExecContext(ctx, templateDeleteWorkflowExecution, map[string]interface{}{
+		"namespace_id": padID(filter.NamespaceID),
+		"run_id":       padID(filter.RunID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to delete workflow execution: %w", err)
@@ -410,21 +541,33 @@ func (mdb *db) DeleteFromVisibility(
 }
 
 // SelectFromVisibility reads one or more rows from visibility table
+// I was trying to keep it consistent with other plugins, but it's a mess. All these mayhem will be cleaned in the new extension.
 func (mdb *db) SelectFromVisibility(
 	ctx context.Context,
 	filter sqlplugin.VisibilitySelectFilter,
 ) ([]sqlplugin.VisibilityRow, error) {
 	if len(filter.Query) == 0 {
 		// backward compatibility for existing tests
-		err := sqlplugin.GenerateSelectQuery(&filter, func(t time.Time) time.Time {
-			return time.Now()
-		})
+		err := GenerateOracleSelectQuery(&filter)
 		if err != nil {
 			return nil, err
 		}
+	}
 
-		// Oracle uses FETCH FIRST instead of LIMIT
-		filter.Query = strings.Replace(filter.Query, "LIMIT ?", "FETCH FIRST ? ROWS ONLY", 1)
+	// When modifying filter parameters
+	for i, arg := range filter.QueryArgs {
+		switch argR := arg.(type) {
+		case time.Time:
+			ts := go_ora.TimeStamp(argR)
+			filter.QueryArgs[i] = ts
+		case *time.Time:
+			ts := go_ora.TimeStamp(*argR)
+			filter.QueryArgs[i] = &ts
+		case string:
+			if argR == "" {
+				filter.QueryArgs[i] = nil
+			}
+		}
 	}
 
 	var rows []queryLocalVisibilityRow
@@ -434,10 +577,8 @@ func (mdb *db) SelectFromVisibility(
 	}
 
 	res := make([]sqlplugin.VisibilityRow, len(rows))
-
 	for i := range rows {
 		externalRow := rows[i].toExternalType()
-
 		if err := mdb.processRowFromDB(&externalRow); err != nil {
 			return nil, err
 		}
@@ -452,7 +593,7 @@ func (mdb *db) GetFromVisibility(
 	filter sqlplugin.VisibilityGetFilter,
 ) (*sqlplugin.VisibilityRow, error) {
 	var row queryLocalVisibilityRow
-	stmt, err := mdb.PrepareNamedContext(ctx, templateGetWorkflowExecution_v8)
+	stmt, err := mdb.PrepareNamedContext(ctx, templateGetWorkflowExecution)
 	if err != nil {
 		return nil, err
 	}
@@ -529,5 +670,123 @@ func (mdb *db) processRowFromDB(row *sqlplugin.VisibilityRow) error {
 			}
 		}
 	}
+	return nil
+}
+
+//it was used for padding CHAR(64) type, but we did switch to VARCHAR2 to remove stupid behaviour of padding.
+func padID(id string) string {
+	return id
+}
+
+func GenerateOracleSelectQuery(filter *sqlplugin.VisibilitySelectFilter) error {
+	// Start building the query
+	whereClauses := []string{"namespace_id = :1"}
+	queryArgs := []interface{}{filter.NamespaceID}
+	paramIndex := 1
+
+	// Determine page size (with safe default)
+	pageSize := 10
+	if filter.PageSize != nil {
+		pageSize = *filter.PageSize
+	}
+
+	// Add WorkflowID condition if present
+	if filter.WorkflowID != nil {
+		paramIndex++
+		whereClauses = append(whereClauses, fmt.Sprintf("workflow_id = :%d", paramIndex))
+		queryArgs = append(queryArgs, *filter.WorkflowID)
+	}
+
+	// Add WorkflowTypeName condition if present
+	if filter.WorkflowTypeName != nil {
+		paramIndex++
+		whereClauses = append(whereClauses, fmt.Sprintf("workflow_type_name = :%d", paramIndex))
+		queryArgs = append(queryArgs, *filter.WorkflowTypeName)
+	}
+
+	// Determine time attribute based on status
+	timeAttr := "start_time"
+	if filter.Status != int32(1) { // RUNNING = 1
+		timeAttr = "close_time"
+	}
+
+	// Add status condition
+	if filter.Status == int32(0) { // UNSPECIFIED = 0
+		paramIndex++
+		whereClauses = append(whereClauses, fmt.Sprintf("status != :%d", paramIndex))
+		queryArgs = append(queryArgs, int32(1)) // NOT RUNNING
+	} else {
+		paramIndex++
+		whereClauses = append(whereClauses, fmt.Sprintf("status = :%d", paramIndex))
+		queryArgs = append(queryArgs, filter.Status)
+	}
+
+	// For pagination, always add MinTime and MaxTime with defaults
+	// Add MinTime - use very old date (1700-01-01) if nil
+	paramIndex++
+	minTimeParam := paramIndex
+	whereClauses = append(whereClauses, fmt.Sprintf("NVL(%s, TO_TIMESTAMP('9999-12-31', 'YYYY-MM-DD')) >= :%d", timeAttr, minTimeParam))
+
+	var minTimeOracle go_ora.TimeStamp
+	if filter.MinTime != nil {
+		minTimeOracle = go_ora.TimeStamp(*filter.MinTime)
+	} else {
+		// Create a TimeStamp for 1700-01-01
+		oldTime, _ := time.Parse("2006-01-02", "1700-01-01")
+		minTimeOracle = go_ora.TimeStamp(oldTime)
+	}
+	queryArgs = append(queryArgs, minTimeOracle)
+
+	// Add MaxTime - use far future date (9999-12-31) if nil
+	paramIndex++
+	maxTimeParam := paramIndex
+	whereClauses = append(whereClauses, fmt.Sprintf("NVL(%s, TO_TIMESTAMP('9999-12-31', 'YYYY-MM-DD')) <= :%d", timeAttr, maxTimeParam))
+
+	var maxTimeOracle go_ora.TimeStamp
+	if filter.MaxTime != nil {
+		maxTimeOracle = go_ora.TimeStamp(*filter.MaxTime)
+	} else {
+		// Create a TimeStamp for 9999-12-31
+		farFutureTime, _ := time.Parse("2006-01-02", "9999-12-31")
+		maxTimeOracle = go_ora.TimeStamp(farFutureTime)
+	}
+	queryArgs = append(queryArgs, maxTimeOracle)
+
+	// Add RunID pagination when RunID is provided
+	if filter.RunID != nil && *filter.RunID != "" {
+		paramIndex++
+		maxTimeAgainParam := paramIndex
+		queryArgs = append(queryArgs, maxTimeOracle) // Reuse maxTime
+
+		paramIndex++
+		runIDParam := paramIndex
+		queryArgs = append(queryArgs, *filter.RunID)
+
+		// IMPORTANT FIX: Correct order in condition - timestamps with timestamps, UUIDs with UUIDs
+		paginationClause := fmt.Sprintf(`(
+            (NVL(%s, TO_TIMESTAMP('9999-12-31', 'YYYY-MM-DD')) = :%d AND run_id > :%d) 
+            OR NVL(%s, TO_TIMESTAMP('9999-12-31', 'YYYY-MM-DD')) < :%d
+        )`, timeAttr, maxTimeAgainParam, runIDParam, timeAttr, maxTimeAgainParam)
+
+		whereClauses = append(whereClauses, paginationClause)
+	}
+
+	// Build the complete query
+	filter.Query = fmt.Sprintf(
+		`SELECT * FROM (
+            SELECT namespace_id, run_id, workflow_type_name, workflow_id, start_time, execution_time, 
+                status, close_time, history_length, history_size_bytes, execution_duration, 
+                state_transition_count, memo, encoding, task_queue, search_attributes, 
+                parent_workflow_id, parent_run_id, root_workflow_id, root_run_id, version_num 
+            FROM executions_visibility
+            WHERE %s
+            ORDER BY NVL(%s, TO_TIMESTAMP('9999-12-31', 'YYYY-MM-DD')) DESC, run_id
+        ) WHERE ROWNUM <= %d`,
+		strings.Join(whereClauses, " AND "),
+		timeAttr,
+		pageSize,
+	)
+
+	filter.QueryArgs = queryArgs
 	return nil
 }

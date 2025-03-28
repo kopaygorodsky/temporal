@@ -2,11 +2,6 @@ package tests
 
 import (
 	"fmt"
-	"net"
-	"path/filepath"
-	"strconv"
-	"testing"
-
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/log"
 	"go.temporal.io/server/common/metrics"
@@ -18,6 +13,10 @@ import (
 	"go.temporal.io/server/common/resolver"
 	"go.temporal.io/server/environment"
 	"go.uber.org/zap/zaptest"
+	"net"
+	"path/filepath"
+	"strconv"
+	"testing"
 )
 
 const (
@@ -104,12 +103,17 @@ func SetupOracleSchema(t *testing.T, cfg *config.SQL) {
 	}
 	defer func() { _ = db.Close() }()
 
-	schemaPath, err := filepath.Abs(testOracleExecutionSchema)
+	mainSchemaPath, err := filepath.Abs(testOracleExecutionSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	statements, err := p.LoadAndSplitQuery([]string{schemaPath})
+	visibilitySchemaPath, err := filepath.Abs(testOracleVisibilitySchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	statements, err := p.LoadAndSplitQuery([]string{mainSchemaPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,20 +126,17 @@ func SetupOracleSchema(t *testing.T, cfg *config.SQL) {
 	}
 
 	//@todo visibility will be implemented later
-	//statements, err = p.LoadAndSplitQuery([]string{schemaPath})
-	//if err != nil {
-	//	t.Fatal(err)
-	//}
-	//
-	//for _, stmt := range statements {
-	//	if stmt[len(stmt)-1] == ';' {
-	//		stmt = stmt[:len(stmt)-1]
-	//	}
-	//	if err = db.Exec(stmt); err != nil {
-	//		defer db.DropAllTables(cfg.DatabaseName)
-	//		t.Fatal(err)
-	//	}
-	//}
+	statements, err = p.LoadAndSplitQuery([]string{visibilitySchemaPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, stmt := range statements {
+		if err = db.Exec(stmt); err != nil {
+			defer db.DropAllTables(cfg.DatabaseName)
+			t.Fatal(err)
+		}
+	}
 }
 
 func TearDownOracleDatabase(t *testing.T, cfg *config.SQL) {
