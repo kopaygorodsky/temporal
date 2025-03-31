@@ -321,8 +321,6 @@ func (c *oracleQueryConverter) buildSelectStmt(
 		paramIndex,
 	)
 
-	fmt.Println(resQuery)
-
 	return resQuery, queryArgs
 }
 

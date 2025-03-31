@@ -111,8 +111,7 @@ workflow_id = :workflow_id`
 	rangeDeleteTransferTaskQuery = `DELETE FROM transfer_tasks WHERE shard_id = :shard_id AND task_id >= :min_task_id AND task_id < :max_task_id`
 
 	// Timer tasks
-	createTimerTasksQuery = `INSERT INTO timer_tasks (shard_id, visibility_timestamp, task_id, data, data_encoding)
-  VALUES (:shard_id, :visibility_timestamp, :task_id, :data, :data_encoding)`
+	createTimerTasksQuery = `INSERT INTO timer_tasks(shard_id, visibility_timestamp, task_id, data, data_encoding) VALUES(:shard_id, :visibility_timestamp, :task_id, :data, :data_encoding)`
 
 	getTimerTasksQuery = `SELECT visibility_timestamp, task_id, data, data_encoding FROM timer_tasks 
   WHERE shard_id = :shard_id 
