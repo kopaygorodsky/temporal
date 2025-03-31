@@ -296,16 +296,27 @@ type execLocalVisibilityRow struct {
 	VersionNum           int64                                `db:"version_num"` // Changed from Version to VersionNum for consistency
 }
 
+// @todo "unable to upsert (insert) workflow execution: ORA-01400: cannot insert NULL into (\"C##TEMPORAL\".\"EXECUTIONS_VISIBILITY\".\"NAMESPACE_ID\
+// All char columns in oracle with NOT NULL can't accept an empty string. Still have not idea should I modify the default value, type. For now I'll keep it as it is.
+func makeNotNullInOracle(val string) string {
+	if val == "" {
+		return " "
+	}
+
+	return val
+}
+
 func newExecLocalVisibilityRow(row *sqlplugin.VisibilityRow) *execLocalVisibilityRow {
 	var attrs sqlplugin.VisibilitySearchAttributes
 	if row.SearchAttributes != nil {
 		attrs = *row.SearchAttributes
 	}
+
 	return &execLocalVisibilityRow{
-		NamespaceID:          padID(row.NamespaceID),
-		RunID:                padID(row.RunID),
-		WorkflowTypeName:     row.WorkflowTypeName,
-		WorkflowID:           row.WorkflowID,
+		NamespaceID:          padID(makeNotNullInOracle(row.NamespaceID)),
+		RunID:                padID(makeNotNullInOracle(row.RunID)),
+		WorkflowTypeName:     makeNotNullInOracle(row.WorkflowTypeName),
+		WorkflowID:           makeNotNullInOracle(row.WorkflowID),
 		StartTime:            go_ora.TimeStamp(row.StartTime),
 		ExecutionTime:        go_ora.TimeStamp(row.ExecutionTime),
 		Status:               row.Status,

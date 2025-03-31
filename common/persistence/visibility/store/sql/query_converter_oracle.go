@@ -80,7 +80,7 @@ func newOracleQueryConverter(
 // it's 4 in the morning, whatever
 // the idea of plugins have to go in the future, in our own extension it will be much simpler.
 func (c *oracleQueryConverter) getDatetimeFormat() string {
-	return time.RFC3339Nano
+	return "2006-01-02T15:04:05.999999999Z07:00"
 }
 
 // getCoalesceCloseTimeExpr returns the expression for coalesced close time
@@ -270,31 +270,23 @@ func (c *oracleQueryConverter) buildSelectStmt(
 		whereClauses = append(
 			whereClauses,
 			fmt.Sprintf(
-				"((%s = :%d AND ev.%s = :%d AND ev.%s > :%d) OR (%s = :%d AND ev.%s < :%d) OR %s < :%d)",
+				"((%s = %s AND ev.%s = %s AND ev.%s > :%d) OR (%s = %s AND ev.%s < %s) OR %s < %s)",
 				sqlparser.String(c.getCoalesceCloseTimeExpr()),
-				paramIndex,
+				toOracleTimeStamp(token.CloseTime),
 				searchattribute.GetSqlDbColName(searchattribute.StartTime),
-				paramIndex+1,
+				toOracleTimeStamp(token.StartTime),
 				searchattribute.GetSqlDbColName(searchattribute.RunID),
-				paramIndex+2,
+				paramIndex+1,
 				sqlparser.String(c.getCoalesceCloseTimeExpr()),
-				paramIndex+3,
+				toOracleTimeStamp(token.CloseTime),
 				searchattribute.GetSqlDbColName(searchattribute.StartTime),
-				paramIndex+4,
+				toOracleTimeStamp(token.StartTime),
 				sqlparser.String(c.getCoalesceCloseTimeExpr()),
-				paramIndex+5,
+				toOracleTimeStamp(token.CloseTime),
 			),
 		)
-		paramIndex += 6
-		queryArgs = append(
-			queryArgs,
-			token.CloseTime,
-			token.StartTime,
-			token.RunID,
-			token.CloseTime,
-			token.StartTime,
-			token.CloseTime,
-		)
+		paramIndex += 1
+		queryArgs = append(queryArgs, token.RunID)
 	}
 
 	// Replace "_version" with "version_num" in the fields
@@ -564,7 +556,6 @@ func (c *oracleQueryConverter) processExprForOracle(exprRef *sqlparser.Expr, que
 	return nil
 }
 
-// processValueExpr converts RFC3339 datetime literals to Oracle timestamps
 func (c *oracleQueryConverter) processValueExpr(exprRef *sqlparser.Expr, queryArgs *[]any, startParamIndex *int) error {
 	if exprRef == nil || *exprRef == nil {
 		return nil
@@ -580,13 +571,11 @@ func (c *oracleQueryConverter) processValueExpr(exprRef *sqlparser.Expr, queryAr
 			if isRFC3339DateTimeString(strVal) {
 				parsedTime, err := time.Parse(time.RFC3339Nano, strVal)
 				if err != nil {
-					return fmt.Errorf("failed to parse RFC3339 timestamp: %v", err)
+					return fmt.Errorf("failed to parse RFC3339Nano timestamp: %v", err)
 				}
 
-				*queryArgs = append(*queryArgs, parsedTime)
-
-				*exprRef = sqlparser.NewValArg([]byte(fmt.Sprintf(":%d", *startParamIndex)))
-				*startParamIndex++
+				// Replace the expression with the Oracle timestamp literal
+				*exprRef = sqlparser.NewValArg([]byte(toOracleTimeStamp(parsedTime)))
 			}
 
 			if strVal == "?" {
@@ -611,4 +600,12 @@ func isRFC3339DateTimeString(s string) bool {
 	)
 
 	return rfc3339Pattern.MatchString(s)
+}
+
+func toOracleTimeStamp(t time.Time) string {
+	// Format time to Oracle's TO_TIMESTAMP format
+	return fmt.Sprintf(
+		"TO_TIMESTAMP('%s', 'YYYY-MM-DD HH24:MI:SS.FF6')",
+		t.Format("2006-01-02 15:04:05.999999"),
+	)
 }
