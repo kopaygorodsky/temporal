@@ -6,8 +6,12 @@ import (
 	"errors"
 	"fmt"
 	go_ora "github.com/sijms/go-ora/v2"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin/oracle/session"
+	"go.temporal.io/server/common/searchattribute"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -593,13 +597,11 @@ func (mdb *db) GetFromVisibility(
 	filter sqlplugin.VisibilityGetFilter,
 ) (*sqlplugin.VisibilityRow, error) {
 	var row queryLocalVisibilityRow
-	stmt, err := mdb.PrepareNamedContext(ctx, templateGetWorkflowExecution)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
 
-	err = stmt.GetContext(ctx, &row, filter)
+	err := mdb.NamedGetContext(ctx, &row, templateGetWorkflowExecution, map[string]interface{}{
+		"namespace_id": padID(filter.NamespaceID),
+		"run_id":       padID(filter.RunID),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -616,8 +618,12 @@ func (mdb *db) CountFromVisibility(
 	ctx context.Context,
 	filter sqlplugin.VisibilitySelectFilter,
 ) (int64, error) {
-	var count int64
-	err := mdb.GetContext(ctx, &count, filter.Query, filter.QueryArgs...)
+	var countStr string
+	err := mdb.GetContext(ctx, &countStr, filter.Query, filter.QueryArgs...)
+	if err != nil {
+		return 0, err
+	}
+	count, err := strconv.ParseInt(countStr, 10, 64)
 	if err != nil {
 		return 0, err
 	}
@@ -641,7 +647,81 @@ func (mdb *db) CountGroupByFromVisibility(
 		return nil, err
 	}
 	defer rows.Close()
-	return sqlplugin.ParseCountGroupByRows(rows, filter.GroupBy)
+	return ParseCountGroupByRows(rows, filter.GroupBy)
+}
+
+// ParseCountGroupByRows was copy/pasted to handle  ExecutionStatus value from DB (got: 1 of type: string, expected type: integer).
+// again, not gonna happen in our own extension
+func ParseCountGroupByRows(rows *sql.Rows, groupBy []string) ([]sqlplugin.VisibilityCountRow, error) {
+	// Number of columns is number of group by fields plus the count column.
+	rowValues := make([]any, len(groupBy)+1)
+	for i := range rowValues {
+		rowValues[i] = new(any)
+	}
+
+	var res []sqlplugin.VisibilityCountRow
+	for rows.Next() {
+		err := rows.Scan(rowValues...)
+		if err != nil {
+			return nil, err
+		}
+		groupValues := make([]any, len(groupBy))
+		for i := range groupBy {
+			groupValues[i], err = parseCountGroupByGroupValue(groupBy[i], *(rowValues[i].(*any)))
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		//@todo this was the reason of copy/pasting the whole function :(
+		// sqlplugin package limits me a lot, so we have what we have.
+		ifacePtr := rowValues[len(rowValues)-1].(*interface{})
+
+		countStr := (*ifacePtr).(string)
+
+		count, err := strconv.Atoi(countStr)
+
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse count from row values: %w", err)
+		}
+		res = append(res, sqlplugin.VisibilityCountRow{
+			GroupValues: groupValues,
+			Count:       int64(count),
+		})
+	}
+	return res, nil
+}
+
+func parseCountGroupByGroupValue(fieldName string, value any) (any, error) {
+	switch fieldName {
+	case searchattribute.ExecutionStatus:
+		switch typedValue := value.(type) {
+		case int:
+			return enumspb.WorkflowExecutionStatus(typedValue).String(), nil
+		case int32:
+			return enumspb.WorkflowExecutionStatus(typedValue).String(), nil
+		case int64:
+			return enumspb.WorkflowExecutionStatus(typedValue).String(), nil
+		case string:
+			statusInt, err := strconv.Atoi(typedValue)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse workflow execution status into int: %w", err)
+			}
+			return enumspb.WorkflowExecutionStatus(statusInt).String(), nil
+		default:
+			// This should never happen.
+			return nil, serviceerror.NewInternal(
+				fmt.Sprintf(
+					"Unable to parse %s value from DB (got: %v of type: %T, expected type: integer)",
+					searchattribute.ExecutionStatus,
+					value,
+					value,
+				),
+			)
+		}
+	default:
+		return value, nil
+	}
 }
 
 // processRowFromDB converts row data from the database format to application format

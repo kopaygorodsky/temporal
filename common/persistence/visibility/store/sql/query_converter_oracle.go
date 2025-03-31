@@ -26,7 +26,9 @@ package sql
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/temporalio/sqlparser"
 	"go.temporal.io/server/common/namespace"
@@ -73,8 +75,12 @@ func newOracleQueryConverter(
 }
 
 // getDatetimeFormat returns the datetime format for Oracle
+// @todo I just have Oracle: https://stackoverflow.com/questions/8855378/oracle-sql-timestamps-in-where-clause
+// so let's output standard golang time format here as this method is used before building actual statement and then we will catch it with regexp.
+// it's 4 in the morning, whatever
+// the idea of plugins have to go in the future, in our own extension it will be much simpler.
 func (c *oracleQueryConverter) getDatetimeFormat() string {
-	return "2006-01-02T15:04:05.999999Z07:00" // ISO 8601 format
+	return time.RFC3339Nano
 }
 
 // getCoalesceCloseTimeExpr returns the expression for coalesced close time
@@ -244,31 +250,27 @@ func (c *oracleQueryConverter) buildSelectStmt(
 
 	whereClauses = append(
 		whereClauses,
-		fmt.Sprintf("%s = :%d", searchattribute.GetSqlDbColName(searchattribute.NamespaceID), paramIndex),
+		fmt.Sprintf("ev.%s = :%d", searchattribute.GetSqlDbColName(searchattribute.NamespaceID), paramIndex),
 	)
 	paramIndex++
 	queryArgs = append(queryArgs, namespaceID.String())
 
 	if len(queryString) > 0 {
-		// Replace all ? in queryString with :n parameters
-		parts := strings.Split(queryString, "?")
-		if len(parts) > 1 {
-			newQueryString := parts[0]
-			for i := 1; i < len(parts); i++ {
-				newQueryString += fmt.Sprintf(":%d", paramIndex)
-				paramIndex++
-				newQueryString += parts[i]
-			}
-			queryString = newQueryString
+		// Process query for Oracle (add table aliases and convert datetime literals)
+		processedQuery, err := c.processQueryForOracle(queryString, &queryArgs, &paramIndex)
+		if err != nil {
+			// @todo buildSelectStmt does not support error handling. Will be fixes later in the main repo when moving to a separate extension
+			return "", queryArgs
 		}
-		whereClauses = append(whereClauses, queryString)
+
+		whereClauses = append(whereClauses, processedQuery)
 	}
 
 	if token != nil {
 		whereClauses = append(
 			whereClauses,
 			fmt.Sprintf(
-				"((%s = :%d AND %s = :%d AND %s > :%d) OR (%s = :%d AND %s < :%d) OR %s < :%d)",
+				"((%s = :%d AND ev.%s = :%d AND ev.%s > :%d) OR (%s = :%d AND ev.%s < :%d) OR %s < :%d)",
 				sqlparser.String(c.getCoalesceCloseTimeExpr()),
 				paramIndex,
 				searchattribute.GetSqlDbColName(searchattribute.StartTime),
@@ -295,7 +297,7 @@ func (c *oracleQueryConverter) buildSelectStmt(
 		)
 	}
 
-	// Replace "version" with "version_num" in the fields
+	// Replace "_version" with "version_num" in the fields
 	fields := make([]string, len(sqlplugin.DbFields))
 	for i, field := range sqlplugin.DbFields {
 		if field == "_version" {
@@ -310,27 +312,26 @@ func (c *oracleQueryConverter) buildSelectStmt(
 
 	resQuery := fmt.Sprintf(
 		`SELECT %s
-		FROM executions_visibility ev
-		LEFT JOIN custom_search_attributes csa
-		ON ev.namespace_id = csa.%s AND ev.run_id = csa.%s
-		WHERE %s
-		ORDER BY %s DESC, %s DESC, %s
-		FETCH FIRST :%d ROWS ONLY`,
+        FROM executions_visibility ev
+        LEFT JOIN custom_search_attributes csa
+        ON ev.%s = csa.%s AND ev.%s = csa.%s
+        WHERE %s
+        ORDER BY get_close_time_or_max(ev.close_time) DESC, ev.%s DESC, ev.%s
+        FETCH FIRST :%d ROWS ONLY`,
 		strings.Join(addPrefix("ev.", fields), ", "),
 		searchattribute.GetSqlDbColName(searchattribute.NamespaceID),
+		searchattribute.GetSqlDbColName(searchattribute.NamespaceID),
+		searchattribute.GetSqlDbColName(searchattribute.RunID),
 		searchattribute.GetSqlDbColName(searchattribute.RunID),
 		strings.Join(whereClauses, " AND "),
-		sqlparser.String(c.getCoalesceCloseTimeExpr()),
 		searchattribute.GetSqlDbColName(searchattribute.StartTime),
-		addSinglePrefix("csa.", searchattribute.GetSqlDbColName(searchattribute.RunID)),
+		searchattribute.GetSqlDbColName(searchattribute.RunID),
 		paramIndex,
 	)
 
-	return resQuery, queryArgs
-}
+	fmt.Println(resQuery)
 
-func addSinglePrefix(prefix, column string) string {
-	return prefix + column
+	return resQuery, queryArgs
 }
 
 // buildCountStmt builds a COUNT statement for Oracle
@@ -345,44 +346,269 @@ func (c *oracleQueryConverter) buildCountStmt(
 
 	whereClauses = append(
 		whereClauses,
-		fmt.Sprintf("(%s = :%d)", searchattribute.GetSqlDbColName(searchattribute.NamespaceID), paramIndex),
+		fmt.Sprintf("(ev.%s = :%d)", searchattribute.GetSqlDbColName(searchattribute.NamespaceID), paramIndex),
 	)
 	paramIndex++
 	queryArgs = append(queryArgs, namespaceID.String())
 
 	if len(queryString) > 0 {
-		// Replace all ? in queryString with :n parameters
-		parts := strings.Split(queryString, "?")
-		if len(parts) > 1 {
-			newQueryString := parts[0]
-			for i := 1; i < len(parts); i++ {
-				newQueryString += fmt.Sprintf(":%d", paramIndex)
-				paramIndex++
-				newQueryString += parts[i]
-			}
-			queryString = newQueryString
+		// Process query for Oracle (add table aliases and convert datetime literals)
+		processedQuery, err := c.processQueryForOracle(queryString, &queryArgs, &paramIndex)
+		if err != nil {
+			// @todo buildSelectStmt does not support error handling. Will be fixes later in the main repo when moving to a separate extension
+			return "", queryArgs
 		}
-		whereClauses = append(whereClauses, queryString)
+
+		whereClauses = append(whereClauses, processedQuery)
+	}
+
+	// Ensure all groupBy columns have explicit table aliases
+	prefixedGroupBy := make([]string, len(groupBy))
+	for i, col := range groupBy {
+		if col == "status" {
+			// For status column, cast to number to ensure Oracle returns it as a number
+			prefixedGroupBy[i] = "TO_NUMBER(ev." + col + ")"
+		} else {
+			// For other columns, just add the ev. prefix
+			prefixedGroupBy[i] = "ev." + col
+		}
 	}
 
 	groupByClause := ""
-	if len(groupBy) > 0 {
-		groupByClause = fmt.Sprintf("GROUP BY %s", strings.Join(groupBy, ", "))
+	if len(prefixedGroupBy) > 0 {
+		groupByClause = fmt.Sprintf("GROUP BY %s", strings.Join(prefixedGroupBy, ", "))
 	}
+
+	// Create select fields with proper aliases
+	selectItems := make([]string, 0, len(groupBy)+1)
+	for _, col := range groupBy {
+		if col == "status" {
+			selectItems = append(selectItems, "TO_NUMBER(ev."+col+") as "+col)
+		} else {
+			selectItems = append(selectItems, "ev."+col)
+		}
+	}
+	selectItems = append(selectItems, "COUNT(*)")
 
 	resQuery := fmt.Sprintf(
 		`SELECT %s
-		FROM executions_visibility ev
-		LEFT JOIN custom_search_attributes csa
-		ON ev.namespace_id = csa.%s AND ev.run_id = csa.%s
-		WHERE %s
-		%s`,
-		strings.Join(append(groupBy, "COUNT(*)"), ", "),
+        FROM executions_visibility ev
+        LEFT JOIN custom_search_attributes csa
+        ON ev.%s = csa.%s AND ev.%s = csa.%s
+        WHERE %s
+        %s`,
+		strings.Join(selectItems, ", "),
 		searchattribute.GetSqlDbColName(searchattribute.NamespaceID),
+		searchattribute.GetSqlDbColName(searchattribute.NamespaceID),
+		searchattribute.GetSqlDbColName(searchattribute.RunID),
 		searchattribute.GetSqlDbColName(searchattribute.RunID),
 		strings.Join(whereClauses, " AND "),
 		groupByClause,
 	)
 
 	return resQuery, queryArgs
+}
+
+// processColumnRef adds table aliases to column references
+func (c *oracleQueryConverter) processColumnRef(exprRef *sqlparser.Expr) error {
+	if exprRef == nil || *exprRef == nil {
+		return nil
+	}
+
+	// Handle column references
+	if colName, ok := (*exprRef).(*sqlparser.ColName); ok {
+		colNameStr := colName.Name.String()
+
+		// Get the SQL DB column name (for system attributes this will be different)
+		sqlDbColName := searchattribute.GetSqlDbColName(colNameStr)
+
+		// Check if this is a custom search attribute
+		customAttrs := searchattribute.GetSqlDbIndexSearchAttributes().CustomSearchAttributes
+		_, isCustom := customAttrs[colNameStr]
+
+		// Decide which table to use based on the attribute type
+		if isCustom {
+			// Custom search attributes are in custom_search_attributes table
+			*exprRef = &sqlparser.ColName{
+				Name:      colName.Name,
+				Qualifier: sqlparser.TableName{Name: sqlparser.NewTableIdent("csa")},
+			}
+		} else {
+			// System attributes and predefined attributes are in executions_visibility table
+			*exprRef = &sqlparser.ColName{
+				Name:      sqlparser.NewColIdent(sqlDbColName),
+				Qualifier: sqlparser.TableName{Name: sqlparser.NewTableIdent("ev")},
+			}
+		}
+	}
+
+	return nil
+}
+
+// processColumnForOracle adds proper table aliases and handles special cases like status
+func (c *oracleQueryConverter) processColumnForOracle(colName string) string {
+	// For status column, cast to number
+	if colName == "status" || colName == searchattribute.ExecutionStatus {
+		return "TO_NUMBER(ev." + searchattribute.GetSqlDbColName(colName) + ")"
+	}
+
+	// Get the SQL DB column name
+	sqlDbColName := searchattribute.GetSqlDbColName(colName)
+
+	// Check if this is a custom search attribute
+	customAttrs := searchattribute.GetSqlDbIndexSearchAttributes().CustomSearchAttributes
+	_, isCustom := customAttrs[colName]
+
+	if isCustom {
+		return "csa." + sqlDbColName
+	} else {
+		return "ev." + sqlDbColName
+	}
+}
+
+func (c *oracleQueryConverter) processQueryForOracle(queryString string, queryArgs *[]any, startParamIndex *int) (string, error) {
+	// First pass: Parse the query and add table aliases
+	tempSQL := "SELECT * FROM table1 WHERE " + queryString
+	stmt, err := sqlparser.Parse(tempSQL)
+	if err != nil {
+		return "", fmt.Errorf("error parsing query statement: %w", err)
+	}
+
+	// Get the expression tree and process it
+	selectStmt, ok := stmt.(*sqlparser.Select)
+	if !ok || selectStmt.Where == nil {
+		return "", fmt.Errorf("error parsing query statement: expected a Where clause")
+	}
+
+	// Add table aliases
+	if err := c.processExprForOracle(&selectStmt.Where.Expr, queryArgs, startParamIndex); err != nil {
+		return "", fmt.Errorf("error processExprForOracle: %w", err)
+	}
+
+	// Get the processed WHERE clause
+	processedQuery := sqlparser.String(selectStmt.Where.Expr)
+
+	// Remove backticks from the query string
+	processedQuery = strings.ReplaceAll(processedQuery, "`", "")
+
+	// Now convert the parameter placeholders to Oracle's :n format
+	return processedQuery, nil
+}
+
+// processExprForOracle recursively processes expressions for Oracle
+func (c *oracleQueryConverter) processExprForOracle(exprRef *sqlparser.Expr, queryArgs *[]any, startParamIndex *int) error {
+	if exprRef == nil || *exprRef == nil {
+		return nil
+	}
+
+	expr := *exprRef
+
+	switch e := expr.(type) {
+	case *sqlparser.ParenExpr:
+		return c.processExprForOracle(&e.Expr, queryArgs, startParamIndex)
+
+	case *sqlparser.AndExpr:
+		if err := c.processExprForOracle(&e.Left, queryArgs, startParamIndex); err != nil {
+			return err
+		}
+		return c.processExprForOracle(&e.Right, queryArgs, startParamIndex)
+
+	case *sqlparser.OrExpr:
+		if err := c.processExprForOracle(&e.Left, queryArgs, startParamIndex); err != nil {
+			return err
+		}
+		return c.processExprForOracle(&e.Right, queryArgs, startParamIndex)
+
+	case *sqlparser.NotExpr:
+		return c.processExprForOracle(&e.Expr, queryArgs, startParamIndex)
+
+	case *sqlparser.ComparisonExpr:
+		// Process left side for table aliases
+		if err := c.processColumnRef(&e.Left); err != nil {
+			return err
+		}
+
+		// Process right side for datetime literals
+		return c.processValueExpr(&e.Right, queryArgs, startParamIndex)
+
+	case *sqlparser.RangeCond:
+		if err := c.processColumnRef(&e.Left); err != nil {
+			return err
+		}
+		if err := c.processValueExpr(&e.From, queryArgs, startParamIndex); err != nil {
+			return err
+		}
+		return c.processValueExpr(&e.To, queryArgs, startParamIndex)
+
+	case *sqlparser.IsExpr:
+		return c.processColumnRef(&e.Expr)
+
+	case *sqlparser.FuncExpr:
+		if strings.EqualFold(e.Name.String(), "get_close_time_or_max") {
+			for i := range e.Exprs {
+				switch arg := e.Exprs[i].(type) {
+				case *sqlparser.AliasedExpr:
+					if colName, ok := arg.Expr.(*sqlparser.ColName); ok {
+						if strings.EqualFold(colName.Name.String(), "close_time") {
+							arg.Expr = &sqlparser.ColName{
+								Name:      colName.Name,
+								Qualifier: sqlparser.TableName{Name: sqlparser.NewTableIdent("ev")},
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// processValueExpr converts RFC3339 datetime literals to Oracle timestamps
+func (c *oracleQueryConverter) processValueExpr(exprRef *sqlparser.Expr, queryArgs *[]any, startParamIndex *int) error {
+	if exprRef == nil || *exprRef == nil {
+		return nil
+	}
+
+	// Handle string literals that might contain datetime values or ?
+	if sqlVal, ok := (*exprRef).(*sqlparser.SQLVal); ok {
+		if sqlVal.Type == sqlparser.StrVal {
+			// Get the string value
+			strVal := string(sqlVal.Val)
+
+			// Check if this is an RFC3339 datetime string
+			if isRFC3339DateTimeString(strVal) {
+				parsedTime, err := time.Parse(time.RFC3339Nano, strVal)
+				if err != nil {
+					return fmt.Errorf("failed to parse RFC3339 timestamp: %v", err)
+				}
+
+				*queryArgs = append(*queryArgs, parsedTime)
+
+				*exprRef = sqlparser.NewValArg([]byte(fmt.Sprintf(":%d", *startParamIndex)))
+				*startParamIndex++
+			}
+
+			if strVal == "?" {
+				*exprRef = sqlparser.NewValArg([]byte(fmt.Sprintf(":%d", *startParamIndex)))
+				*startParamIndex++
+			}
+		}
+	}
+
+	return nil
+}
+
+// isRFC3339DateTimeString checks if a string matches RFC3339 datetime format
+func isRFC3339DateTimeString(s string) bool {
+	// Strip any surrounding quotes that might be present
+	s = strings.Trim(s, "'\"")
+
+	// More comprehensive regex for RFC3339 datetime format
+	// Handles optional fractional seconds and timezone offset
+	rfc3339Pattern := regexp.MustCompile(
+		`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$`,
+	)
+
+	return rfc3339Pattern.MatchString(s)
 }
