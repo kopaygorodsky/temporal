@@ -8,7 +8,8 @@ import (
 )
 
 const (
-	createShardQry = `INSERT INTO shards COLUMNS(shard_id, range_id, data, data_encoding) VALUES (:shard_id, :range_id, :data, :data_encoding)`
+	//shards is somehow reserved keyword and oracle conflicts with this name so we have to specify either table owner like TEMPORAL.shards or an alias "shards" for table shards
+	createShardQry = `INSERT INTO shards shards(shard_id, range_id, data, data_encoding) VALUES (:shard_id, :range_id, :data, :data_encoding)`
 
 	getShardQry = `SELECT shard_id, range_id, data, data_encoding FROM shards WHERE shard_id = :shard_id`
 

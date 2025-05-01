@@ -70,8 +70,7 @@ namespace_id = :namespace_id AND
 workflow_id = :workflow_id`
 
 	// History immediate tasks
-	createHistoryImmediateTasksQuery = `INSERT INTO history_immediate_tasks(shard_id, category_id, task_id, data, data_encoding) 
- VALUES(:shard_id, :category_id, :task_id, :data, :data_encoding)`
+	createHistoryImmediateTasksQuery = `INSERT INTO history_immediate_tasks(shard_id, category_id, task_id, data, data_encoding) VALUES(:shard_id, :category_id, :task_id, :data, :data_encoding)`
 
 	getHistoryImmediateTasksQuery = `SELECT task_id, data, data_encoding 
  FROM history_immediate_tasks 
@@ -83,8 +82,7 @@ workflow_id = :workflow_id`
 	rangeDeleteHistoryImmediateTasksQuery = `DELETE FROM history_immediate_tasks WHERE shard_id = :shard_id AND category_id = :category_id AND task_id >= :min_task_id AND task_id < :max_task_id`
 
 	// History scheduled tasks
-	createHistoryScheduledTasksQuery = `INSERT INTO history_scheduled_tasks (shard_id, category_id, visibility_timestamp, task_id, data, data_encoding)
-  VALUES (:shard_id, :category_id, :visibility_timestamp, :task_id, :data, :data_encoding)`
+	createHistoryScheduledTasksQuery = `INSERT INTO history_scheduled_tasks(shard_id, category_id, visibility_timestamp, task_id, data, data_encoding) VALUES(:shard_id, :category_id, :visibility_timestamp, :task_id, :data, :data_encoding)`
 
 	getHistoryScheduledTasksQuery = `SELECT visibility_timestamp, task_id, data, data_encoding FROM history_scheduled_tasks 
   WHERE shard_id = :shard_id 
@@ -98,8 +96,7 @@ workflow_id = :workflow_id`
 	rangeDeleteHistoryScheduledTasksQuery = `DELETE FROM history_scheduled_tasks WHERE shard_id = :shard_id AND category_id = :category_id AND visibility_timestamp >= :min_visibility_ts AND visibility_timestamp < :max_visibility_ts`
 
 	// Transfer tasks
-	createTransferTasksQuery = `INSERT INTO transfer_tasks(shard_id, task_id, data, data_encoding) 
- VALUES(:shard_id, :task_id, :data, :data_encoding)`
+	createTransferTasksQuery = `INSERT INTO transfer_tasks(shard_id, task_id, data, data_encoding) VALUES(:shard_id, :task_id, :data, :data_encoding)`
 
 	getTransferTasksQuery = `SELECT task_id, data, data_encoding 
  FROM transfer_tasks 
@@ -124,8 +121,7 @@ workflow_id = :workflow_id`
 	rangeDeleteTimerTaskQuery = `DELETE FROM timer_tasks WHERE shard_id = :shard_id AND visibility_timestamp >= :min_visibility_ts AND visibility_timestamp < :max_visibility_ts`
 
 	// Replication tasks
-	createReplicationTasksQuery = `INSERT INTO replication_tasks (shard_id, task_id, data, data_encoding) 
-  VALUES(:shard_id, :task_id, :data, :data_encoding)`
+	createReplicationTasksQuery = `INSERT INTO replication_tasks (shard_id, task_id, data, data_encoding) VALUES(:shard_id, :task_id, :data, :data_encoding)`
 
 	getReplicationTasksQuery = `SELECT task_id, data, data_encoding FROM replication_tasks 
   WHERE shard_id = :shard_id AND task_id >= :min_task_id AND task_id < :max_task_id 
@@ -144,8 +140,7 @@ workflow_id = :workflow_id`
   FETCH FIRST :page_size ROWS ONLY`
 
 	// Visibility tasks
-	createVisibilityTasksQuery = `INSERT INTO visibility_tasks(shard_id, task_id, data, data_encoding) 
- VALUES(:shard_id, :task_id, :data, :data_encoding)`
+	createVisibilityTasksQuery = `INSERT INTO visibility_tasks(shard_id, task_id, data, data_encoding) VALUES(:shard_id, :task_id, :data, :data_encoding)`
 
 	getVisibilityTasksQuery = `SELECT task_id, data, data_encoding 
  FROM visibility_tasks 
@@ -230,7 +225,7 @@ func (mdb *db) InsertIntoExecutions(
 	ctx context.Context,
 	row *sqlplugin.ExecutionsRow,
 ) (sql.Result, error) {
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createExecutionQuery,
 		newLocalExecutionsRow(row),
 	)
@@ -388,7 +383,7 @@ func (mdb *db) InsertIntoCurrentExecutions(
 	ctx context.Context,
 	row *sqlplugin.CurrentExecutionsRow,
 ) (sql.Result, error) {
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createCurrentExecutionQuery,
 		newExecCurrentExecutionsRow(row),
 	)
@@ -529,7 +524,7 @@ func (mdb *db) InsertIntoHistoryImmediateTasks(
 		inserts[i] = newLocalHistoryImmediateTasksRow(row)
 	}
 
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createHistoryImmediateTasksQuery,
 		inserts,
 	)
@@ -614,7 +609,7 @@ func (mdb *db) InsertIntoHistoryScheduledTasks(
 		}
 	}
 
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createHistoryScheduledTasksQuery,
 		inserts,
 	)
@@ -722,7 +717,8 @@ func (mdb *db) InsertIntoTransferTasks(
 	for i, row := range rows {
 		inserts[i] = newLocalTransferTasksRow(row)
 	}
-	return mdb.NamedExecContext(ctx,
+
+	return mdb.ExecContext(ctx,
 		createTransferTasksQuery,
 		inserts,
 	)
@@ -801,7 +797,7 @@ func (mdb *db) InsertIntoTimerTasks(
 			DataEncoding:        row.DataEncoding,
 		}
 	}
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createTimerTasksQuery,
 		inserts,
 	)
@@ -909,7 +905,7 @@ func (mdb *db) InsertIntoBufferedEvents(
 	for i, row := range rows {
 		inserts[i] = newLocalBufferedEventsRow(row)
 	}
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createBufferedEventsQuery,
 		inserts,
 	)
@@ -984,7 +980,7 @@ func (mdb *db) InsertIntoReplicationTasks(
 	for i, row := range rows {
 		inserts[i] = newLocalReplicationTasksRow(row)
 	}
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createReplicationTasksQuery,
 		inserts,
 	)
@@ -1069,7 +1065,7 @@ func (mdb *db) InsertIntoReplicationDLQTasks(
 	for i, row := range rows {
 		inserts[i] = newLocalReplicationDLQTasksRow(row)
 	}
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		insertReplicationTaskDLQQuery,
 		inserts,
 	)
@@ -1151,7 +1147,7 @@ func (mdb *db) InsertIntoVisibilityTasks(
 	for i, row := range rows {
 		inserts[i] = newLocalVisibilityTasksRow(row)
 	}
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createVisibilityTasksQuery,
 		inserts,
 	)

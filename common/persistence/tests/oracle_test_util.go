@@ -25,6 +25,10 @@ const (
 	testOraclePassword           = "temporal"
 	testOracleConnectionProtocol = "tcp"
 	testOracleDatabaseName       = "FREE"
+	//testOracleUser               = "TEMPORAL"
+	//testOraclePassword           = "TEMPORAL"
+	//testOracleConnectionProtocol = "tcp"
+	//testOracleDatabaseName       = "ORCL"
 
 	// TODO hard code this dir for now
 	//  need to merge persistence test config / initialization in one place

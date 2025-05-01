@@ -56,7 +56,7 @@ func (mdb *db) InsertIntoMessages(
 			MessageEncoding: row.MessageEncoding,
 		}
 	}
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		templateEnqueueMessageQuery,
 		args,
 	)

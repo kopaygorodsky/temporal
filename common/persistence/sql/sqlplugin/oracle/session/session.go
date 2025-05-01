@@ -76,5 +76,10 @@ func buildDSN(
 		return "", fmt.Errorf("invalid connection port: %s", cfg.ConnectAddr)
 	}
 
-	return go_ora.BuildUrl(addrParts[0], port, cfg.DatabaseName, cfg.User, cfg.Password, nil), nil
+	// Create a map for connection options
+	connOpts := map[string]string{
+		"client charset": "AL32UTF8",
+	}
+
+	return go_ora.BuildUrl(addrParts[0], port, cfg.DatabaseName, cfg.User, cfg.Password, connOpts), nil
 }

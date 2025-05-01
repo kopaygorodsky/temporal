@@ -135,7 +135,7 @@ func (mdb *db) InsertIntoTasks(
 			DataEncoding: rows[i].DataEncoding,
 		}
 	}
-	return mdb.NamedExecContext(ctx,
+	return mdb.ExecContext(ctx,
 		createTaskQry,
 		insertRows,
 	)
