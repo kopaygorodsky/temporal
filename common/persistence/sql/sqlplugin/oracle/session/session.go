@@ -2,14 +2,15 @@ package session
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/iancoleman/strcase"
 	"github.com/jmoiron/sqlx"
 	go_ora "github.com/sijms/go-ora/v2"
 	"go.temporal.io/server/common/config"
 	"go.temporal.io/server/common/persistence/sql/sqlplugin"
 	"go.temporal.io/server/common/resolver"
-	"strconv"
-	"strings"
 )
 
 type Session struct {
@@ -43,6 +44,11 @@ func createConnection(
 	if err != nil {
 		return nil, err
 	}
+
+	if db == nil {
+		return nil, fmt.Errorf("db is nil, instantiation not happened")
+	}
+
 	if cfg.MaxConns > 0 {
 		db.SetMaxOpenConns(cfg.MaxConns)
 	}
