@@ -7,6 +7,8 @@ retract (
 	v1.26.0 // Published accidentally.
 )
 
+replace github.com/sijms/go-ora/v2 v2.8.24 => github.com/kopaygorodsky/go-ora/v2 v2.0.0-20250829082932-b72748f7a22f
+
 require (
 	cloud.google.com/go/storage v1.50.0
 	github.com/aws/aws-sdk-go v1.55.6
